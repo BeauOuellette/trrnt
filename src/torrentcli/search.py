@@ -55,6 +55,18 @@ def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
     """Guess content category from title and Jackett category IDs."""
     title_lower = title.lower()
 
+    # Audiobook signals take precedence — they overlap with the music range
+    # (Jackett 3030 sits inside 3000s) and audiobook releases can ship as MP3.
+    if jackett_cats:
+        for cat in jackett_cats:
+            try:
+                if int(cat) == 3030:
+                    return "audiobooks"
+            except ValueError:
+                pass
+    if re.search(r"\b(audiobook|m4b|abook|audible)\b", title_lower):
+        return "audiobooks"
+
     # Jackett category ranges: 2000s = Movies, 5000s = TV, 3000s = Audio
     if jackett_cats:
         for cat in jackett_cats:
