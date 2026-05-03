@@ -2,8 +2,10 @@
 
 import asyncio
 import re
+import shutil
 import subprocess
 import platform
+from pathlib import Path
 from typing import Any
 
 from rich.text import Text
@@ -27,7 +29,7 @@ from .config import Config
 from .download import Aria2Client, DownloadStatus
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
-from .security import SecurityScanner
+from .security import SecurityScanner, is_audiobook_dir
 from .vpn import VPNGuard
 
 
@@ -463,6 +465,27 @@ class TGetApp(App):
                 f"Scan warning: {download_path.name} — {result.error}",
                 severity="warning",
             )
+
+        # Re-route audiobooks based on file content. Mirrors the CLI
+        # watch-mode behavior in main.py.
+        if result.clean and is_audiobook_dir(download_path):
+            ab_root = Path(
+                self.config.get("categories", "audiobooks", "path")
+            ).expanduser()
+            if ab_root not in download_path.parents:
+                ab_root.mkdir(parents=True, exist_ok=True)
+                new_path = ab_root / download_path.name
+                if new_path.exists():
+                    self.notify(
+                        f"Audiobook target already exists, leaving in place: {new_path}",
+                        severity="warning",
+                    )
+                else:
+                    shutil.move(str(download_path), str(new_path))
+                    self.notify(
+                        f"🎧 Routed audiobook → {new_path}",
+                        severity="information",
+                    )
 
     def _make_progress(self, percent: float) -> Text:
         """Create a text-based progress bar."""
