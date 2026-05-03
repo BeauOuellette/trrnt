@@ -58,6 +58,8 @@ categories:
     quality_prefer: ["1080p", "x265"]
   music:
     path: "~/Media/Music"
+  audiobooks:
+    path: "~/Media/Audiobooks"
   other:
     path: "~/Downloads/torrents"
 
