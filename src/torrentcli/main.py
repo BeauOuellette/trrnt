@@ -545,6 +545,59 @@ def vpn(ctx):
     run_async(_vpn())
 
 
+@cli.command()
+@click.pass_context
+def jackett(ctx):
+    """Open Jackett's UI in your browser (start the service if needed)."""
+    import shutil as _shutil
+    import subprocess
+    import time
+    import webbrowser
+
+    import httpx
+
+    config = ctx.obj["config"]
+    url = config.get("jackett", "url") or "http://localhost:9117"
+
+    def is_up() -> bool:
+        try:
+            r = httpx.get(url, timeout=2)
+            return r.status_code < 500
+        except Exception:
+            return False
+
+    if is_up():
+        console.print(f"[green]✓ Jackett is up at {url}[/]")
+    else:
+        console.print(f"[yellow]Jackett not reachable at {url}[/]")
+        if _shutil.which("brew"):
+            console.print("[dim]Starting via brew services...[/]")
+            try:
+                subprocess.run(
+                    ["brew", "services", "start", "jackett"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception as e:
+                console.print(f"[yellow]brew services start failed: {e}[/]")
+            for _ in range(10):
+                time.sleep(0.5)
+                if is_up():
+                    console.print(f"[green]✓ Jackett is up at {url}[/]")
+                    break
+            else:
+                console.print(
+                    "[yellow]Jackett didn't come up in time — opening the URL anyway "
+                    "(if you run it via Docker or another method, that's fine).[/]"
+                )
+        else:
+            console.print(
+                "[dim]brew not found — start Jackett yourself, then re-run.[/]"
+            )
+
+    webbrowser.open(url)
+    console.print(f"[blue]Opened {url}[/]")
+
+
 # ─── Plex ─────────────────────────────────────────────────────────────────────
 
 @cli.group()
