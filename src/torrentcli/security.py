@@ -52,6 +52,24 @@ DEFAULT_BLOCKED_EXTENSIONS = {
 }
 
 
+def is_audiobook_dir(path: str | Path) -> bool:
+    """True if path is an .m4b file or contains any .m4b file (recursive).
+
+    M4B presence is the canonical signal for an audiobook download — it's
+    the format Apple/Audible use, and bare .mp3 audiobooks are too
+    ambiguous (could be music) to re-route automatically.
+    """
+    path = Path(path)
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.suffix.lower() == ".m4b"
+    for entry in path.rglob("*"):
+        if entry.is_file() and entry.suffix.lower() == ".m4b":
+            return True
+    return False
+
+
 class SecurityScanner:
     """File security scanning and quarantine management."""
 
