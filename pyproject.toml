@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torrent-cli"
+version = "0.1.0"
+description = "Terminal torrent aggregator & downloader with VPN kill switch"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.47.0",
+    "rich>=13.7.0",
+    "click>=8.1.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "xmltodict>=0.13.0",
+]
+
+[project.scripts]
+tget = "torrentcli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+torrentcli = ["config.example.yaml"]

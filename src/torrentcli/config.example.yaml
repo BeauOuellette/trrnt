@@ -1,0 +1,106 @@
+# tget configuration
+# Copy to ~/.config/tget/config.yaml and fill in your values
+
+# Jackett settings
+jackett:
+  url: "http://localhost:9117"
+  api_key: "YOUR_JACKETT_API_KEY"
+  # Indexer names to search (empty = all)
+  indexers: []
+  # Timeout in seconds
+  timeout: 30
+
+# aria2 RPC settings
+aria2:
+  rpc_url: "http://localhost:6800/jsonrpc"
+  rpc_secret: ""
+  # Download directory (default for uncategorized)
+  download_dir: "~/Downloads/torrents"
+  # Max concurrent downloads
+  max_concurrent: 3
+  # Seed ratio limit (0 = unlimited)
+  seed_ratio: 2.0
+  # Bind to VPN interface (set to your utun interface)
+  bt_interface: ""
+
+# VPN settings
+vpn:
+  # Enable VPN enforcement
+  enabled: true
+  # VPN tunnel interface prefix (macOS ProtonVPN uses utun)
+  interface_prefix: "utun"
+  # Your real ISP IP (optional, for double-check)
+  real_ip: ""
+  # IP check service
+  ip_check_url: "https://ipinfo.io/ip"
+  # Kill switch polling interval (seconds)
+  kill_switch_interval: 5
+
+# Plex settings
+plex:
+  enabled: true
+  url: "http://localhost:32400"
+  token: "YOUR_PLEX_TOKEN"
+  # Library section IDs to scan after download
+  # Find with: curl "http://localhost:32400/library/sections?X-Plex-Token=TOKEN"
+  library_sections:
+    movies: 1
+    tv: 2
+
+# Download categories → directories
+# These map to auto-detected content types
+categories:
+  movies:
+    path: "~/Media/Movies"
+    quality_prefer: ["2160p", "1080p", "x265"]
+  tv:
+    path: "~/Media/TV"
+    quality_prefer: ["1080p", "x265"]
+  music:
+    path: "~/Media/Music"
+  other:
+    path: "~/Downloads/torrents"
+
+# Security settings
+security:
+  # ClamAV virus scanning
+  clamav_enabled: true
+  # clamd socket path (macOS default after brew install)
+  clamav_socket: "/tmp/clamd.socket"
+  # Quarantine directory for flagged downloads
+  quarantine_dir: "~/Downloads/quarantine"
+  # Scan every completed download before moving to media library
+  scan_on_complete: true
+  # Block password-protected archives (common malware vector)
+  block_password_protected_archives: true
+  # Blocked file extensions — executables/scripts that shouldn't be in media downloads
+  blocked_extensions:
+    - .exe
+    - .bat
+    - .cmd
+    - .ps1
+    - .scr
+    - .vbs
+    - .vbe
+    - .msi
+    - .dll
+    - .com
+    - .js
+    - .hta
+    - .lnk
+    - .pif
+    - .wsf
+    - .app
+
+# Quality filter keywords (exclude results matching these)
+quality_exclude:
+  - "CAM"
+  - "TS"
+  - "HDCAM"
+
+# Display settings
+display:
+  # Max results to show
+  max_results: 50
+  # Default sort: seeders, size, name
+  default_sort: "seeders"
