@@ -388,6 +388,31 @@ def status(ctx, watch):
                         else:
                             console.print(f"[yellow]⚠ Scan warning:[/] {scan_result.error}")
 
+                        # Re-route audiobooks based on file content. A clean
+                        # download containing .m4b files belongs in the
+                        # audiobooks folder regardless of how its title was
+                        # tagged at search time.
+                        if scan_result.clean:
+                            import shutil
+                            from .security import is_audiobook_dir
+                            if is_audiobook_dir(download_path):
+                                ab_root = Path(
+                                    config.get("categories", "audiobooks", "path")
+                                ).expanduser()
+                                if ab_root not in download_path.parents:
+                                    ab_root.mkdir(parents=True, exist_ok=True)
+                                    new_path = ab_root / download_path.name
+                                    if new_path.exists():
+                                        console.print(
+                                            f"[yellow]⚠ Audiobook target already exists, "
+                                            f"leaving in place:[/] {new_path}"
+                                        )
+                                    else:
+                                        shutil.move(str(download_path), str(new_path))
+                                        console.print(
+                                            f"[green]🎧 Routed audiobook → {new_path}[/]"
+                                        )
+
             if not watch:
                 break
             await asyncio.sleep(2)

@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
         "movies": {"path": "~/Media/Movies", "quality_prefer": ["2160p", "1080p"]},
         "tv": {"path": "~/Media/TV", "quality_prefer": ["1080p"]},
         "music": {"path": "~/Media/Music"},
+        "audiobooks": {"path": "~/Media/Audiobooks"},
         "other": {"path": "~/Downloads/torrents"},
     },
     "quality_exclude": ["CAM", "TS", "HDCAM"],
