@@ -136,6 +136,12 @@ def search(ctx, query, limit, sort, download):
         with console.status(f"Searching for '{query}'..."):
             results = await jackett.search(query, quality_exclude=quality_exclude, max_results=limit)
 
+        if jackett.last_errors:
+            console.print(
+                f"[dim]{len(jackett.last_errors)} indexer(s) skipped:[/] "
+                + ", ".join(f"{name} ({reason})" for name, reason in jackett.last_errors)
+            )
+
         if not results:
             console.print("[yellow]No results found.[/]")
             return

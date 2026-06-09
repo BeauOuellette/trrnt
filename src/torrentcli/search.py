@@ -1,5 +1,6 @@
 """Jackett/Torznab search aggregation."""
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -104,6 +105,14 @@ class JackettSearch:
         self.api_key = config.get("api_key", "")
         self.indexers = config.get("indexers", [])
         self.timeout = config.get("timeout", 30)
+        # Per-indexer ceiling. A single slow/broken indexer (e.g. one hitting a
+        # Cloudflare challenge) must not be able to stall the whole search past
+        # this, regardless of the overall `timeout`. Defaults to `timeout`.
+        self.indexer_timeout = config.get("indexer_timeout", self.timeout)
+        # Populated after each search() with (indexer, reason) for any indexer
+        # that failed or timed out, so callers can distinguish "no results"
+        # from "the search itself broke". Reset at the start of every search.
+        self.last_errors: list[tuple[str, str]] = []
 
     def _build_url(self, query: str, indexer: str = "all") -> str:
         """Build Jackett Torznab search URL."""
@@ -113,41 +122,97 @@ class JackettSearch:
         }
         return f"{self.base_url}/api/v2.0/indexers/{indexer}/results/torznab/api?{urlencode(params)}"
 
+    async def _list_indexers(self, client: httpx.AsyncClient) -> list[str]:
+        """Fetch the IDs of indexers configured in Jackett.
+
+        Querying each indexer by ID lets one slow indexer fail in isolation,
+        unlike the aggregate `all` endpoint where Jackett blocks on the slowest
+        one and a single hang times out the entire request.
+        """
+        try:
+            resp = await client.get(
+                f"{self.base_url}/api/v2.0/indexers/all/results/torznab/api",
+                params={"apikey": self.api_key, "t": "indexers", "configured": "true"},
+            )
+            resp.raise_for_status()
+            parsed = xmltodict.parse(resp.text)
+            idx = parsed.get("indexers", {}).get("indexer", [])
+            if isinstance(idx, dict):
+                idx = [idx]
+            ids = [i.get("@id") for i in idx if i.get("@id")]
+            return ids or ["all"]
+        except Exception:
+            # Couldn't enumerate — fall back to the aggregate endpoint.
+            return ["all"]
+
+    async def _search_indexer(
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        indexer: str,
+        quality_exclude: list[str] | None,
+    ) -> list[TorrentResult]:
+        """Search a single indexer. Records failures in self.last_errors."""
+        try:
+            resp = await asyncio.wait_for(
+                client.get(self._build_url(query, indexer)),
+                timeout=self.indexer_timeout,
+            )
+            resp.raise_for_status()
+
+            parsed = xmltodict.parse(resp.text)
+
+            # Jackett reports indexer-level failures (Cloudflare challenges,
+            # auth errors) as a torznab <error> element inside a 200 response.
+            err = parsed.get("error")
+            if isinstance(err, dict):
+                desc = err.get("@description", "indexer error")
+                self.last_errors.append((indexer, desc.splitlines()[0][:200]))
+                return []
+
+            channel = parsed.get("rss", {}).get("channel", {})
+            items = channel.get("item", [])
+            if isinstance(items, dict):
+                items = [items]
+
+            found: list[TorrentResult] = []
+            for item in items:
+                result = self._parse_item(item, indexer)
+                if result and self._passes_filter(result, quality_exclude):
+                    found.append(result)
+            return found
+
+        except asyncio.TimeoutError:
+            self.last_errors.append((indexer, f"timed out after {self.indexer_timeout}s"))
+            return []
+        except httpx.HTTPStatusError as e:
+            self.last_errors.append((indexer, f"HTTP {e.response.status_code}"))
+            return []
+        except Exception as e:
+            self.last_errors.append((indexer, type(e).__name__))
+            return []
+
     async def search(
         self,
         query: str,
         quality_exclude: list[str] | None = None,
         max_results: int = 50,
     ) -> list[TorrentResult]:
-        """Search across all configured indexers."""
-        results: list[TorrentResult] = []
+        """Search across all configured indexers concurrently."""
+        self.last_errors = []
 
-        indexers = self.indexers if self.indexers else ["all"]
+        async with httpx.AsyncClient(timeout=self.indexer_timeout) as client:
+            indexers = self.indexers if self.indexers else await self._list_indexers(client)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for indexer in indexers:
-                try:
-                    url = self._build_url(query, indexer)
-                    resp = await client.get(url)
-                    resp.raise_for_status()
+            # Query every indexer in parallel so a slow one only delays itself,
+            # capped per-indexer. Healthy indexers still return their results.
+            tasks = [
+                self._search_indexer(client, query, indexer, quality_exclude)
+                for indexer in indexers
+            ]
+            per_indexer = await asyncio.gather(*tasks)
 
-                    parsed = xmltodict.parse(resp.text)
-                    channel = parsed.get("rss", {}).get("channel", {})
-                    items = channel.get("item", [])
-
-                    if isinstance(items, dict):
-                        items = [items]
-
-                    for item in items:
-                        result = self._parse_item(item, indexer)
-                        if result and self._passes_filter(result, quality_exclude):
-                            results.append(result)
-
-                except httpx.HTTPStatusError as e:
-                    # Indexer returned an error — skip it
-                    continue
-                except Exception as e:
-                    continue
+        results = [r for sublist in per_indexer for r in sublist]
 
         # Sort by seeders descending
         results.sort(key=lambda r: r.seeders, reverse=True)

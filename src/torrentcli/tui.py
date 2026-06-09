@@ -537,7 +537,15 @@ class TGetApp(App):
                 result.indexer[:15],
             )
 
-        info.update(f"Found {len(self.search_results)} results for '{query}'")
+        status = f"Found {len(self.search_results)} results for '{query}'"
+        if self.jackett.last_errors:
+            status += f" — {len(self.jackett.last_errors)} indexer(s) skipped"
+            self.notify(
+                "Indexers skipped: "
+                + ", ".join(f"{n} ({r})" for n, r in self.jackett.last_errors),
+                severity="warning",
+            )
+        info.update(status)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Toggle selection on a result row."""
