@@ -1,18 +1,22 @@
-"""tget — Terminal torrent aggregator & downloader.
+"""trrnt — Terminal torrent aggregator & downloader.
 
 Usage:
-    tget                        Launch interactive TUI
-    tget search "query"         Quick search from CLI
-    tget add <magnet/url>       Add a download directly
-    tget status                 Show active downloads
-    tget remove <gid>           Stop and remove a download
-    tget pause / resume         Pause/resume all
-    tget vpn                    Check VPN status
-    tget plex scan              Trigger Plex library scan
-    tget scan <path>            Scan file/dir for threats
-    tget quarantine             List quarantined items
-    tget quarantine release     Release false positive
-    tget config                 Show/initialize config
+    trrnt                        Launch interactive TUI
+    trrnt search "query"         Quick search from CLI
+    trrnt add <magnet/url>       Add a download directly
+    trrnt status                 Show active downloads
+    trrnt remove <gid>           Stop and remove a download
+    trrnt pause / resume         Pause/resume all
+    trrnt vpn                    Check VPN status
+    trrnt plex scan              Trigger Plex library scan
+    trrnt scan <path>            Scan file/dir for threats
+    trrnt quarantine             List quarantined items
+    trrnt quarantine release     Release false positive
+    trrnt config                 Show/initialize config
+
+`tget` remains as an alias for the same CLI. Config still lives at
+~/.config/tget/config.yaml — the path is deliberately unchanged so existing
+configs keep working.
 """
 
 import asyncio
@@ -90,7 +94,7 @@ def run_async(coro):
 @click.option("--config", "-c", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def cli(ctx, config_path):
-    """tget — search, select, and download torrents from your terminal."""
+    """trrnt — search, select, and download torrents from your terminal."""
     ctx.ensure_object(dict)
     ctx.obj["config"] = get_config(config_path)
 

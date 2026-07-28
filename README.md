@@ -1,21 +1,21 @@
-# tget — Terminal Torrent Aggregator & Downloader
+# trrnt — Terminal Torrent Aggregator & Downloader
 
 Search, select, and download torrents entirely from your terminal with VPN enforcement and Plex integration.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────┐     ┌────────────┐
-│  tget CLI   │────▶│  Jackett  │────▶│  Indexers   │
+┌─────────────┐     ┌───────────┐     ┌─────────────┐
+│  trrnt CLI  │────▶│  Jackett  │────▶│  Indexers   │
 │  or TUI     │     │  Torznab  │     │ (50+ sites) │
-└──────┬──────┘     └──────────┘     └────────────┘
+└──────┬──────┘     └───────────┘     └─────────────┘
        │
        │  magnet/torrent
        ▼
-┌──────────────┐     ┌──────────┐
+┌──────────────┐     ┌───────────┐
 │  VPN Guard   │────▶│  aria2c   │────▶ Downloads
 │  kill switch │     │  RPC      │
-└──────────────┘     └──────┬───┘
+└──────────────┘     └──────┬────┘
                             │ on complete
                             ▼
                      ┌──────────┐
@@ -66,11 +66,15 @@ pip install -e .
 
 ```bash
 # Create config file
-tget config --init
+trrnt config --init
 
 # Edit with your credentials
 $EDITOR ~/.config/tget/config.yaml
 ```
+
+> The command was renamed from `tget` to `trrnt`. `tget` still works as an
+> alias. The config directory stays `~/.config/tget/` so existing configs
+> keep working.
 
 ### Required config values:
 - `jackett.api_key` — Find in Jackett UI at http://localhost:9117
@@ -85,7 +89,7 @@ $EDITOR ~/.config/tget/config.yaml
 
 ### Interactive TUI
 ```bash
-tget
+trrnt
 ```
 
 | Key      | Action              |
@@ -101,44 +105,44 @@ tget
 ### CLI Mode
 ```bash
 # Search
-tget search "The Bear S03"
-tget search "Oppenheimer 2160p" --limit 10 --sort size
+trrnt search "The Bear S03"
+trrnt search "Oppenheimer 2160p" --limit 10 --sort size
 
 # Search + interactive download
-tget search "Big Lebowski" -d
+trrnt search "Big Lebowski" -d
 
 # Add magnet directly
-tget add "magnet:?xt=urn:btih:..."
+trrnt add "magnet:?xt=urn:btih:..."
 
 # Download status
-tget status
-tget status --watch      # live refresh
+trrnt status
+trrnt status --watch      # live refresh
 
 # Pause / resume
-tget pause
-tget resume
+trrnt pause
+trrnt resume
 
 # VPN check
-tget vpn
+trrnt vpn
 
 # Plex
-tget plex libraries      # list sections
-tget plex scan           # scan all
-tget plex scan -s 1      # scan specific section
+trrnt plex libraries      # list sections
+trrnt plex scan           # scan all
+trrnt plex scan -s 1      # scan specific section
 
 # Config check (with connection tests)
-tget config
+trrnt config
 
 # Security scanning
-tget scan ~/Downloads/some-torrent    # manual scan
-tget quarantine list                  # list quarantined items
-tget quarantine release <name> ~/Media/Movies  # release false positive
-tget quarantine log                   # view scan log
+trrnt scan ~/Downloads/some-torrent    # manual scan
+trrnt quarantine list                  # list quarantined items
+trrnt quarantine release <name> ~/Media/Movies  # release false positive
+trrnt quarantine log                   # view scan log
 ```
 
 ## VPN Enforcement
 
-tget enforces VPN at three levels:
+trrnt enforces VPN at three levels:
 
 1. **Interface check** — Verifies a `utun*` tunnel interface exists and is UP
 2. **IP verification** — Confirms your external IP differs from your real IP
@@ -162,7 +166,7 @@ Or set `aria2.bt_interface: utun4` in your config.
 
 ## Plex Integration
 
-When downloads are added, tget automatically triggers a Plex library scan for the matching content category (movies/tv). This means new content appears in Plex shortly after download completes.
+When downloads are added, trrnt automatically triggers a Plex library scan for the matching content category (movies/tv). This means new content appears in Plex shortly after download completes.
 
 ## Security
 
@@ -173,9 +177,9 @@ Every completed download goes through a 4-stage security pipeline before it reac
 3. **Password-protected archive detection** — Flags encrypted .zip/.rar/.7z files (common malware evasion tactic)
 4. **ClamAV virus scan** — Full recursive scan with `clamdscan` (fast daemon mode) or falls back to `clamscan`
 
-If any stage flags a threat, the download is automatically moved to quarantine (`~/Downloads/quarantine`) with a detailed log entry. You can review and release false positives with `tget quarantine release`.
+If any stage flags a threat, the download is automatically moved to quarantine (`~/Downloads/quarantine`) with a detailed log entry. You can review and release false positives with `trrnt quarantine release`.
 
-The TUI status bar shows ClamAV health in real-time. `tget config` includes ClamAV in its connection checks.
+The TUI status bar shows ClamAV health in real-time. `trrnt config` includes ClamAV in its connection checks.
 
 ## Project Structure
 

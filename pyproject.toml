@@ -20,6 +20,8 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
+trrnt = "torrentcli.main:cli"
+# Legacy name kept as an alias so older habits and docs keep working.
 tget = "torrentcli.main:cli"
 
 [tool.setuptools.packages.find]
