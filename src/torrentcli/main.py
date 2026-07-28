@@ -32,6 +32,34 @@ from .config import Config
 console = Console()
 
 
+# Startup banner. Shown only while aria2/clamd are coming up — the TUI clears
+# the screen when it launches, so this costs no permanent rows in the interface.
+_SPLASH = [
+    "█████ ████  ████  █   █ █████",
+    "  █   █   █ █   █ ██  █   █  ",
+    "  █   ████  ████  █ █ █   █  ",
+    "  █   █  █  █  █  █  ██   █  ",
+    "  █   █   █ █   █ █   █   █  ",
+]
+
+# Top-to-bottom gradient, matching the TUI's blue accents.
+_SPLASH_COLORS = ["#5fd7ff", "#42b6ef", "#2f95df", "#2074cf", "#1553bf"]
+
+
+def _print_splash():
+    """Print the logo while services start.
+
+    Skipped when stdout is not a terminal so piping or redirecting output never
+    picks up banner bytes.
+    """
+    if not console.is_terminal:
+        return
+    console.print()
+    for line, color in zip(_SPLASH, _SPLASH_COLORS):
+        console.print(f"  [bold {color}]{line}[/]")
+    console.print("  [dim]terminal torrent aggregator[/]\n")
+
+
 def _ensure_services(config: Config):
     """Start aria2 and clamd if not already running.
 
@@ -100,6 +128,7 @@ def cli(ctx, config_path):
 
     if ctx.invoked_subcommand is None:
         # Auto-start services before launching TUI
+        _print_splash()
         daemon = _ensure_services(ctx.obj["config"])
         from .tui import run_tui
         try:
