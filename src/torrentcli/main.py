@@ -28,40 +28,36 @@ from .config import Config
 console = Console()
 
 
-def _ensure_services():
-    """Start aria2 and clamd if not already running."""
+def _ensure_services(config: Config):
+    """Start aria2 and clamd if not already running.
+
+    Returns the Aria2Daemon so the caller can shut it down on exit. We no longer
+    detect aria2 with `pgrep -x aria2c`: that finds *any* aria2c, including one
+    wedged on a different port or spinning without serving RPC, and it told us
+    nothing about which process we would later be responsible for stopping.
+    Aria2Daemon probes the actual RPC endpoint instead and tracks ownership.
+    """
     import shutil
     import subprocess
 
-    # Start aria2 if not running
-    try:
-        subprocess.run(
-            ["pgrep", "-x", "aria2c"],
-            capture_output=True, check=True,
-        )
-    except subprocess.CalledProcessError:
-        if shutil.which("aria2c"):
-            console.print("[dim]Starting aria2...[/]", end=" ")
-            subprocess.Popen(
-                ["aria2c", "--enable-rpc", "--rpc-listen-all=false",
-                 "--enable-dht=true", "--enable-dht6=true",
-                 "--seed-ratio=2.0",
-                 "--max-concurrent-downloads=5",
-                 "--max-connection-per-server=16",
-                 "--split=16",
-                 "--min-split-size=1M",
-                 "--bt-max-peers=100",
-                 "--bt-request-peer-speed-limit=5M",
-                 "--enable-peer-exchange=true",
-                 "--bt-enable-lpd=true",
-                 "--listen-port=6881-6999",
-                 "--dht-listen-port=6881-6999",
-                 "--daemon=true"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            console.print("[green]✓[/]")
-        else:
-            console.print("[yellow]aria2 not installed (brew install aria2)[/]")
+    from .daemon import Aria2Daemon
+
+    daemon = Aria2Daemon(config.get("aria2"))
+    result = daemon.ensure_running()
+
+    if result == "adopted":
+        console.print("[dim]Using already-running aria2 (not started by tget)[/]")
+    elif result == "reclaimed":
+        console.print("[dim]Reattached to aria2 left by a previous run[/]")
+    elif result == "replaced":
+        console.print("[yellow]Replaced a stale aria2 daemon[/] [green]✓[/]")
+    elif result == "started":
+        console.print("[dim]Starting aria2...[/] [green]✓[/]")
+    elif result == "failed":
+        console.print("[red]aria2 exited immediately[/] — is port "
+                      f"{daemon.rpc_port} already in use?")
+    elif result == "unavailable":
+        console.print("[yellow]aria2 not installed (brew install aria2)[/]")
 
     # Start clamd if not running
     try:
@@ -77,6 +73,8 @@ def _ensure_services():
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             console.print("[green]✓[/]")
+
+    return daemon
 
 
 def get_config(config_path: str | None = None) -> Config:
@@ -98,9 +96,23 @@ def cli(ctx, config_path):
 
     if ctx.invoked_subcommand is None:
         # Auto-start services before launching TUI
-        _ensure_services()
+        daemon = _ensure_services(ctx.obj["config"])
         from .tui import run_tui
-        run_tui(ctx.obj["config"])
+        try:
+            run_tui(ctx.obj["config"])
+        finally:
+            # Stop the daemon we started. Aria2Daemon.shutdown() is idempotent
+            # and a no-op for a daemon we merely adopted, so this is safe on
+            # every exit path — and it is what stops us orphaning aria2c.
+            # is_rpc_alive() first: if aria2 already died we can't know what was
+            # queued, and shouldn't claim anything was saved.
+            if (daemon.owns_daemon and daemon.is_rpc_alive()
+                    and not daemon.queue_is_empty()):
+                console.print(
+                    "[dim]Stopping aria2 — unfinished downloads are saved "
+                    "and resume next launch.[/]"
+                )
+            daemon.shutdown()
 
 
 # ─── Search ───────────────────────────────────────────────────────────────────

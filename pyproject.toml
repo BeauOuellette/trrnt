@@ -16,6 +16,9 @@ dependencies = [
     "xmltodict>=0.13.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 tget = "torrentcli.main:cli"
 
@@ -24,3 +27,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 torrentcli = ["config.example.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

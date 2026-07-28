@@ -23,6 +23,10 @@ DEFAULTS: dict[str, Any] = {
         "max_concurrent": 3,
         "seed_ratio": 2.0,
         "bt_interface": "",
+        # aria2 event backend. Empty = aria2's own default (kqueue on macOS).
+        # Set to "poll" or "select" if aria2c ever starts spinning a core while
+        # idle; some aria2 builds have busy-loop bugs in specific backends.
+        "event_poll": "",
     },
     "vpn": {
         "enabled": True,

@@ -22,6 +22,9 @@ aria2:
   seed_ratio: 2.0
   # Bind to VPN interface (set to your utun interface)
   bt_interface: ""
+  # aria2 event backend: "" (aria2 default, kqueue on macOS), "poll", or "select".
+  # Set this to "poll" if aria2c ever pins a CPU core while sitting idle.
+  event_poll: ""
 
 # VPN settings
 vpn:

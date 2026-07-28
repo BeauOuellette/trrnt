@@ -6,4 +6,6 @@ build/
 .DS_Store
 *.egg
 .eggs/
+.venv/
+.pytest_cache/
 
