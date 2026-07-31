@@ -5,6 +5,7 @@ import pytest
 
 from torrentcli.search import _detect_category
 from torrentcli.security import (
+    detect_category_from_names,
     detect_content_category,
     is_comic_dir,
     is_ebook_dir,
@@ -131,3 +132,34 @@ def test_a_video_download_is_left_alone(tmp_path):
 
 def test_missing_path_is_not_a_crash(tmp_path):
     assert detect_content_category(tmp_path / "gone") is None
+
+
+# ── classification from aria2's file list, before anything is on disk ─────────
+
+def test_the_release_that_slipped_through_is_caught_by_its_file_list():
+    """The real case: title said nothing, but aria2 knew it was a .cbr."""
+    title = "Supergirl - The World (2026) (digital) (Son of Ultron-Empire)"
+    names = [
+        "/Users/me/Downloads/torrents/movies/"
+        "Supergirl - The World (2026) (digital) (Son of Ultron-Empire).cbr"
+    ]
+    assert detect_category_from_names(names) == "comics"
+    # ...and the title heuristic now catches it too, via the (digital) marker.
+    assert _detect_category(title, None) == "comics"
+
+
+def test_digital_marker_is_not_triggered_by_video_wording():
+    assert _detect_category("Some Movie 2024 1080p Digital Copy", None) == "movies"
+    assert _detect_category("Artist - Album (Digital Deluxe) FLAC", None) == "music"
+
+
+def test_file_list_classification_by_extension():
+    assert detect_category_from_names(["a/b/book.epub"]) == "ebooks"
+    assert detect_category_from_names(["a/part1.m4b", "a/part2.m4b"]) == "audiobooks"
+    assert detect_category_from_names(["movie.mkv", "sub.srt"]) is None
+    assert detect_category_from_names([]) is None
+
+
+def test_file_list_keeps_the_same_precedence_as_on_disk():
+    assert detect_category_from_names(["x.cbz", "y.epub"]) == "comics"
+    assert detect_category_from_names(["x.m4b", "y.cbz"]) == "audiobooks"

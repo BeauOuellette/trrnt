@@ -117,6 +117,21 @@ def detect_content_category(path: str | Path) -> str | None:
     return None
 
 
+def detect_category_from_names(names) -> str | None:
+    """Same classification, from file names alone.
+
+    aria2 knows a torrent's file list as soon as its metadata resolves — long
+    before any of it is on disk — which makes this a far better signal than
+    the release title. Titles omit the format constantly: a .cbr posted as
+    "Series - Issue (2026) (digital)" carries no format token at all.
+    """
+    suffixes = {Path(n).suffix.lower() for n in names}
+    for category, extensions in _CONTENT_SIGNATURES:
+        if suffixes & extensions:
+            return category
+    return None
+
+
 class SecurityScanner:
     """File security scanning and quarantine management."""
 

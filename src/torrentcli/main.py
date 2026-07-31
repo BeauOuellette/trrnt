@@ -421,10 +421,17 @@ def status(ctx, watch):
                 f"  Waiting: {stats.get('numWaiting', 0)}"
             )
 
-            # Scan-on-complete for --watch mode
+            # Scan-on-complete for --watch mode. Seeding torrents have finished
+            # downloading but stay in the active list, so they must be picked
+            # up here too — waiting for seed-ratio can mean waiting forever.
             if watch and config.get("security", "scan_on_complete"):
-                for dl in stopped:
-                    if dl.status == "complete" and dl.gid not in scanned_gids:
+                finished = [d for d in stopped if d.status == "complete"]
+                finished += [
+                    d for d in active
+                    if d.total_bytes > 0 and d.completed_bytes >= d.total_bytes
+                ]
+                for dl in finished:
+                    if dl.gid not in scanned_gids:
                         scanned_gids.add(dl.gid)
                         if not dl.dir:
                             continue
@@ -440,6 +447,13 @@ def status(ctx, watch):
                                 download_path = max(children, key=lambda p: p.stat().st_mtime)
                         if download_path is None or not download_path.exists():
                             continue
+                        # Stop seeding before touching the files — aria2 loses
+                        # track of a torrent the moment it is moved.
+                        for call in (aria2.force_remove, aria2.remove_result):
+                            try:
+                                await call(dl.gid)
+                            except Exception:
+                                pass  # already stopped
                         console.print(f"\n[bold]Scanning completed download:[/] {download_path.name}")
                         scan_result = await scanner.full_scan(download_path, expected_bytes=dl.total_bytes)
                         if scan_result.clean:
@@ -477,6 +491,9 @@ def status(ctx, watch):
                                         )
                                     else:
                                         shutil.move(str(download_path), str(new_path))
+                                        Path(f"{download_path}.aria2").unlink(
+                                            missing_ok=True
+                                        )
                                         console.print(
                                             f"[green]Routed {content_cat} → {new_path}[/]"
                                         )

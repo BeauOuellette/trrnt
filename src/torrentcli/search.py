@@ -102,7 +102,12 @@ def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
     # Book formats, checked after the TV patterns so an anime or comic-book
     # adaptation with an SxxExx tag still reads as TV. Only unambiguous format
     # tokens qualify — bare "comic" or "manga" appear in plenty of video rips.
-    if re.search(r"\b(cbr|cbz|cb7|cbt)\b|\bgraphic novels?\b", title_lower):
+    # "(digital)" is the comics scene's own marker and is safe in parentheses:
+    # video releases write "Digital Copy" or "WEB-DL", never "(digital)".
+    if re.search(
+        r"\b(cbr|cbz|cb7|cbt)\b|\bgraphic novels?\b|\(digital\)|\(c2c\)",
+        title_lower,
+    ):
         return "comics"
     if re.search(r"\b(epub|mobi|azw3?|e-?books?)\b", title_lower):
         return "ebooks"

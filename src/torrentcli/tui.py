@@ -29,7 +29,11 @@ from .config import Config
 from .download import Aria2Client, DownloadStatus
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
-from .security import SecurityScanner, detect_content_category
+from .security import (
+    SecurityScanner,
+    detect_category_from_names,
+    detect_content_category,
+)
 from .storage import DestinationUnavailable, resolve_destination
 from .vpn import VPNGuard
 
@@ -256,6 +260,7 @@ class TGetApp(App):
         self.search_results: list[TorrentResult] = []
         self.selected_indices: set[int] = set()
         self._scanned_gids: set[str] = set()  # Track downloads already scanned
+        self._previewed_gids: set[str] = set()  # Classified from their file list
         self._stall_tracker: dict[str, int] = {}  # gid -> consecutive stall checks
 
     def compose(self) -> ComposeResult:
@@ -372,13 +377,48 @@ class TGetApp(App):
                 else:
                     self._stall_tracker.pop(dl.gid, None)
 
-            # Scan newly completed downloads (skip tiny metadata downloads)
+            # Once a magnet's metadata resolves, aria2 knows the file list.
+            # Classify from it immediately so a comic that was tagged as a
+            # movie at search time announces where it will actually land,
+            # instead of silently sitting in the wrong folder while it runs.
+            for dl in active:
+                if dl.gid in self._previewed_gids or not dl.total_bytes:
+                    continue
+                self._previewed_gids.add(dl.gid)
+                try:
+                    names = await self.aria2.get_files(dl.gid)
+                except Exception:
+                    self._previewed_gids.discard(dl.gid)
+                    continue
+                cat = detect_category_from_names(names)
+                if not cat:
+                    continue
+                try:
+                    target = Path(resolve_destination(self.config, cat).path)
+                except DestinationUnavailable:
+                    continue
+                if target != Path(dl.dir):
+                    self.notify(
+                        f"{dl.name[:34]} is {cat} — filing there when it finishes"
+                    )
+
+            # Scan newly completed downloads (skip tiny metadata downloads).
+            # A torrent that has finished downloading but is still seeding
+            # stays in aria2's *active* list, so watching `stopped` alone
+            # would leave it unfiled until seed-ratio is met — which on a
+            # low-demand torrent may be never.
             if self.config.get("security", "scan_on_complete"):
-                for dl in stopped:
-                    if dl.status == "complete" and dl.gid not in self._scanned_gids:
-                        self._scanned_gids.add(dl.gid)
-                        if dl.dir and dl.total_bytes > 1_000_000:
-                            self._scan_completed_download(dl)
+                finished = [d for d in stopped if d.status == "complete"]
+                finished += [
+                    d for d in active
+                    if d.total_bytes > 0 and d.completed_bytes >= d.total_bytes
+                ]
+                for dl in finished:
+                    if dl.gid in self._scanned_gids:
+                        continue
+                    self._scanned_gids.add(dl.gid)
+                    if dl.dir and dl.total_bytes > 1_000_000:
+                        self._scan_completed_download(dl)
 
             table = self.query_one("#downloads-table", DataTable)
             table.clear()
@@ -415,9 +455,26 @@ class TGetApp(App):
         except Exception:
             pass  # aria2 might not be running yet
 
+    async def _release_from_aria2(self, dl: DownloadStatus) -> None:
+        """Stop seeding a finished download so its files can be moved.
+
+        Seeding keeps a completed torrent in aria2's active list indefinitely
+        on a low-demand swarm. Waiting for seed-ratio before filing would mean
+        never filing it, so the trade is made explicitly here: the file gets
+        put where it belongs, and this torrent stops seeding.
+        """
+        try:
+            await self.aria2.force_remove(dl.gid)
+        except Exception:
+            pass  # already stopped — nothing to release
+        try:
+            await self.aria2.remove_result(dl.gid)
+        except Exception:
+            pass
+
     @work(group="security_scan")
     async def _scan_completed_download(self, dl: DownloadStatus) -> None:
-        """Scan a completed download for threats."""
+        """Scan a completed download for threats, then file it by content."""
         from pathlib import Path
 
         # Find the actual downloaded file/folder inside the download directory
@@ -440,6 +497,11 @@ class TGetApp(App):
         if download_path is None or not download_path.exists():
             self.notify(f"Scan skipped: can't locate download for {dl.gid[:12]}", severity="warning")
             return
+
+        # Release the file before touching it. A finished torrent is still
+        # being seeded, and aria2 loses track of it the moment we move it —
+        # so drop it from aria2 first rather than leaving a broken entry.
+        await self._release_from_aria2(dl)
 
         self.notify(f"Scanning: {download_path.name}...")
 
@@ -498,6 +560,9 @@ class TGetApp(App):
             return
 
         shutil.move(str(download_path), str(new_path))
+        # aria2 leaves its resume file behind when a torrent is dropped
+        # mid-seed; without this it lingers next to the old location forever.
+        Path(f"{download_path}.aria2").unlink(missing_ok=True)
         self.notify(
             f"{_CATEGORY_ICONS.get(content_cat, '📁')} Routed {content_cat} → {new_path}",
             severity="information",

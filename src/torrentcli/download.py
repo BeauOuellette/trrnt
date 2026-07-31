@@ -172,6 +172,14 @@ class Aria2Client:
         result = await self._call("addUri", [[url], options])
         return result
 
+    async def get_files(self, gid: str) -> list[str]:
+        """File paths inside a download, available once metadata resolves.
+
+        Empty while a magnet is still fetching its metadata.
+        """
+        result = await self._call("getFiles", [gid])
+        return [f.get("path", "") for f in (result or []) if f.get("path")]
+
     async def get_status(self, gid: str) -> DownloadStatus:
         """Get status of a specific download."""
         keys = [
