@@ -43,8 +43,11 @@ _SPLASH = [
     "  █   █   █ █   █ █   █   █  ",
 ]
 
-# Top-to-bottom gradient, matching the TUI's blue accents.
-_SPLASH_COLORS = ["#5fd7ff", "#42b6ef", "#2f95df", "#2074cf", "#1553bf"]
+# Top-to-bottom gradient in the TUI's violet family. Each value is an exact
+# xterm-256 slot, so it survives Terminal.app's 256-colour quantisation
+# unchanged — an interpolated ramp would land on whatever the cube rounds to.
+# Runs from a light tint through the accent (140) down to the selection (60).
+_SPLASH_COLORS = ["#d7afff", "#af87d7", "#875fd7", "#875faf", "#5f5f87"]
 
 
 def _print_splash():

@@ -1,4 +1,4 @@
-"""The downloads table renders through the real TUI.
+"""The tables re-fit themselves to the terminal width.
 
 _update_downloads swallows every exception so a broken aria2 doesn't crash
 the app — which also means a column/row mismatch would silently blank the
@@ -10,7 +10,8 @@ import asyncio
 import pytest
 
 from torrentcli.download import DownloadStatus
-from torrentcli.tui import TGetApp
+from torrentcli.search import TorrentResult
+from torrentcli.tui import TGetApp, fit_name
 
 
 class FakeConfig:
@@ -57,15 +58,16 @@ class FakeAria2:
         return []
 
 
+LONG = "The Agency 2024 S02E02 A Bear in Wolfs Clothing 2160p PMTP WEB-DL DDP5 1 DV"
+
 ACTIVE = DownloadStatus(
-    gid="abc123", status="active", name="Some Torrent",
+    gid="abc123", status="active", name=LONG,
     total_bytes=1_000_000, completed_bytes=500_000,
     download_speed=1024, seeders=9, connections=12,
 )
 
 
 def _app():
-    # scan_on_complete off so the refresh doesn't try to scan anything.
     app = TGetApp(FakeConfig({
         "vpn": {"enabled": False},
         "security": {"scan_on_complete": False, "clamav_enabled": False,
@@ -85,32 +87,115 @@ def _app():
     return app
 
 
-def test_the_seeds_column_reaches_the_rendered_row():
+def _run(size, body):
     async def go():
         app = _app()
-        async with app.run_test():
-            await app._update_downloads()
-            table = app.query_one("#downloads-table")
-            assert table.row_count == 1
-            row = [str(c) for c in table.get_row_at(0)]
-            # Name, Size, Progress, Seeds, Speed, ETA, Status
-            assert row[3] == "9/12"
-            return row
-
-    row = asyncio.run(go())
-    assert row[0] == "Some Torrent"
+        async with app.run_test(size=size):
+            return await body(app)
+    return asyncio.run(go())
 
 
-def test_every_column_gets_a_value():
-    """A mismatch here would be swallowed and blank the table."""
-    async def go():
-        app = _app()
-        async with app.run_test():
-            table = app.query_one("#downloads-table")
-            columns = len(table.columns)
-            await app._update_downloads()
-            return columns, table.row_count, len(table.get_row_at(0))
+# ── fit_name ──────────────────────────────────────────────────────────────────
 
-    columns, rows, cells = asyncio.run(go())
+def test_fit_name_keeps_the_distinguishing_tail():
+    """Releases differ at the end, so a plain right-cut loses the only part
+    that separates two rows."""
+    out = fit_name(LONG, 52)
+    assert len(out) == 52
+    assert out.endswith("DDP5 1 DV")
+    assert out.startswith("The Agency")
+    assert "…" in out
+
+
+def test_fit_name_leaves_short_names_alone():
+    assert fit_name("Short.Release.mkv", 52) == "Short.Release.mkv"
+
+
+def test_two_near_identical_releases_stay_distinguishable():
+    a = fit_name("The Agency 2024 S02E02 A Bear in Wolfs Clothing 2160p PMTP WEB-DL DDP5 1 DV", 52)
+    b = fit_name("The Agency 2024 S02E02 A Bear in Wolfs Clothing 2160p AMZN WEB-DL DDP5 1 H", 52)
+    assert a != b, "truncation collapsed two different releases into one string"
+
+
+# ── downloads table ───────────────────────────────────────────────────────────
+
+def test_narrow_window_drops_the_status_column():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return [str(c.label) for c in t.columns.values()], t.row_count
+    cols, rows = _run((102, 40), body)
+    assert "Status" not in cols
+    assert cols == ["Name", "Size", "Progress", "Seeds", "Speed", "ETA"]
     assert rows == 1, "row was dropped — column count and row width disagree"
-    assert cells == columns == 7
+
+
+def test_wide_window_keeps_the_status_column():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return [str(c.label) for c in t.columns.values()], t.row_count
+    cols, rows = _run((206, 40), body)
+    assert cols[-1] == "Status"
+    assert rows == 1
+
+
+def test_the_seeds_column_reaches_the_rendered_row():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return [str(c) for c in t.get_row_at(0)]
+    row = _run((102, 40), body)
+    assert row[3] == "9/12"
+
+
+def test_every_column_gets_a_value_at_both_widths():
+    """A mismatch here would be swallowed and blank the table."""
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return len(t.columns), len(t.get_row_at(0))
+    for size in ((102, 40), (206, 40)):
+        cols, cells = _run(size, body)
+        assert cols == cells, f"{size[0]} cols: {cols} columns vs {cells} cells"
+
+
+def test_the_download_name_is_cut_to_fit_the_window():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return str(t.get_row_at(0)[0])
+    narrow = _run((102, 40), body)
+    wide = _run((206, 40), body)
+    assert len(narrow) < len(wide), "narrow window should show a shorter name"
+    assert len(narrow) <= 60
+
+
+# ── results table ─────────────────────────────────────────────────────────────
+
+def _result(title):
+    return TorrentResult(title=title, size_bytes=5_000_000_000, seeders=49,
+                         leechers=117, indexer="The Pirate Bay", magnet="magnet:?x")
+
+
+def test_results_name_column_grows_with_the_window():
+    async def body(app):
+        app.search_results = [_result(LONG)]
+        app._render_results()
+        t = app.query_one("#results-table")
+        return str(t.get_row_at(0)[2])
+    narrow = _run((102, 40), body)
+    wide = _run((206, 40), body)
+    assert len(narrow) < len(wide), "wide window should show more of the name"
+    assert wide.endswith("DDP5 1 DV")
+
+
+def test_resizing_refits_the_results_without_losing_the_row():
+    async def body(app):
+        app.search_results = [_result(LONG), _result("Another Release 1080p")]
+        app._render_results()
+        before = app.query_one("#results-table").row_count
+        await app.on_resize(None)
+        return before, app.query_one("#results-table").row_count
+    before, after = _run((102, 40), body)
+    assert before == after == 2

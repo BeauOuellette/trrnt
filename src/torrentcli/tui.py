@@ -25,6 +25,8 @@ from textual.widgets import (
     Static,
 )
 
+from textual.theme import Theme
+
 from .config import Config
 from .download import Aria2Client, DownloadStatus, predict_category
 from .plex import PlexClient
@@ -33,12 +35,65 @@ from .security import SecurityScanner, detect_content_category
 from .storage import DestinationUnavailable, resolve_destination
 from .vpn import VPNGuard
 
+# ── Palette ───────────────────────────────────────────────────────────────────
+# Every value is an exact xterm-256 slot. macOS Terminal.app has no truecolor,
+# so Textual quantises anything else on the way out — and the 6×6×6 colour cube
+# only has the levels 00/5f/87/af/d7/ff, which leaves a dark *tinted* ground
+# nowhere to land but pure black, taking the panel separation with it. Neutral
+# greys from the 232–255 ramp survive exactly; the character goes in the accent.
+VIOLET = Theme(
+    name="violet",
+    background="#1c1c1c",   # 234
+    surface="#262626",      # 235
+    panel="#3a3a3a",        # 237
+    # Declared one slot high on purpose: rich's 256-colour downgrade shifts
+    # every value in the 232–255 grey ramp down by one, so this renders as
+    # #d0d0d0 (252) — 11:1 on the ground. Pure white is the only light grey
+    # that round-trips exactly, and 17:1 is punishing for a long session.
+    foreground="#d7d7d7",
+    primary="#af87d7",      # 140 — headers
+    secondary="#5f5f87",    # 60  — selection
+    accent="#af87d7",       # 140
+    success="#5fd7af",      # 79
+    warning="#d7af5f",      # 179
+    error="#ff5f87",        # 204
+    dark=True,
+)
+
+SEED_GOOD = "#5fd7af"   # a seeder is connected
+SEED_WARN = "#d7af5f"   # peers, but all partial
+SEED_NONE = "#ff5f87"   # nothing on the line
+DIM = "#808080"         # 244
+
 # Shown when a finished download is re-filed by its contents.
 _CATEGORY_ICONS = {"audiobooks": "🎧", "comics": "💥", "ebooks": "📚"}
 
 # Stall detection, counted in refresh ticks of ~2s each.
 _STALL_WARN_TICKS = 30    # ~60s — say something
 _STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peers
+
+
+# Everything in the results row that isn't the name: marker, index, size,
+# seeders, leechers, source, plus DataTable's cell padding. Name gets the rest.
+_RESULT_CHROME = 50
+# Same for the downloads row, in its narrow form (no Status column).
+_DOWNLOAD_CHROME = 66
+# Below this the Status column is dropped; the progress bar and Seeds colour
+# already carry that information.
+_WIDE = 140
+
+
+def fit_name(name: str, budget: int) -> str:
+    """Truncate to budget, keeping the end of the string.
+
+    Releases differ at the tail — "2160p PMTP WEB-DL DDP5 1 DV" against
+    "2160p AMZN WEB-DL DDP5 1 H" — so cutting the end throws away the only
+    part that tells two rows apart. Cut the middle instead.
+    """
+    if budget <= 1 or len(name) <= budget:
+        return name[:budget] if budget > 0 else ""
+    head = int((budget - 1) * 0.42)
+    return name[:head] + "…" + name[len(name) - (budget - 1 - head):]
 
 
 def _peer_cell(dl: DownloadStatus) -> Text:
@@ -54,11 +109,11 @@ def _peer_cell(dl: DownloadStatus) -> Text:
 
     seeders, peers = dl.seeders, dl.connections
     if seeders > 0:
-        style = "green"          # someone has the whole file
+        style = SEED_GOOD        # someone has the whole file
     elif peers > 0:
-        style = "yellow"         # peers, but all of them partial
+        style = SEED_WARN        # peers, but all of them partial
     else:
-        style = "red"            # nothing on the line
+        style = SEED_NONE        # nothing on the line
     return Text(f"{seeders}/{peers}", style=style)
 
 
@@ -212,6 +267,51 @@ class InspectScreen(ModalScreen[str]):
         self.dismiss("open")
 
 
+class KeysScreen(ModalScreen[None]):
+    """Every binding, including the ones the footer has no room for.
+
+    Built from the app's own BINDINGS so it cannot drift out of sync with
+    what the keys actually do.
+    """
+
+    CSS = """
+    KeysScreen { align: center middle; }
+    #keys-dialog {
+        width: 52; max-width: 90%; height: auto; max-height: 80%;
+        background: $surface; border: thick $primary; padding: 1 2;
+    }
+    #keys-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    .key-row { height: 1; }
+    #keys-hint { color: $text-muted; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="keys-dialog"):
+            yield Label("Keys", id="keys-title")
+            for binding in self.app.BINDINGS:
+                if binding.action == "show_keys":
+                    continue
+                shown = binding.key_display or _key_label(binding.key)
+                yield Static(
+                    f"[bold $primary]{shown:>6}[/]  {binding.description}",
+                    classes="key-row",
+                )
+            yield Static("esc or ? to close", id="keys-hint")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+def _key_label(key: str) -> str:
+    """Render a Textual key name the way the footer does — ctrl+d → ^d."""
+    return f"^{key[5:]}" if key.startswith("ctrl+") else key
+
+
 class StatusBar(Static):
     """Top status bar showing VPN + download state."""
 
@@ -276,17 +376,28 @@ class TGetApp(App):
     }
     """
 
+    # The full set runs to 121 columns, which does not fit a 102-column window.
+    # Rather than abbreviate every label, only the five most-used are shown;
+    # the rest keep working and are listed by `?`. All still bind.
     BINDINGS = [
-        Binding("ctrl+q", "quit", "Quit", priority=True),
-        Binding("ctrl+s", "focus_search", "Search", priority=True),
-        Binding("ctrl+a", "select_all", "Select All", priority=True),
         Binding("ctrl+d", "download_selected", "Download", priority=True),
-        Binding("ctrl+p", "pause_all", "Pause All", priority=True),
-        Binding("ctrl+r", "refresh_downloads", "Refresh", priority=True),
         Binding("ctrl+x", "clear_finished", "Clear Done", priority=True),
-        Binding("ctrl+w", "remove_download", "Remove", priority=True),
-        Binding("ctrl+i", "inspect_result", "Inspect", priority=True),
-        Binding("ctrl+h", "inspect_download", "Health", priority=True),
+        # Remove moves off ctrl+w — ctrl+r reads as "remove" far more readily
+        # than as "refresh", and the download list already re-renders every 2s
+        # on its own, so the manual refresh it displaces is near-redundant.
+        Binding("ctrl+r", "remove_download", "Remove", priority=True),
+        Binding("ctrl+q", "quit", "Quit", priority=True),
+        # Not ctrl+? — that is DEL (0x7f) at the terminal, not a key Textual
+        # can bind. Plain ? is left non-priority so it still types normally in
+        # the search box, and only opens the overlay from a table.
+        Binding("question_mark", "show_keys", "Keys", key_display="?"),
+
+        Binding("ctrl+s", "focus_search", "Search", priority=True, show=False),
+        Binding("ctrl+a", "select_all", "Select All", priority=True, show=False),
+        Binding("ctrl+p", "pause_all", "Pause All", priority=True, show=False),
+        Binding("ctrl+f", "refresh_downloads", "Refresh", priority=True, show=False),
+        Binding("ctrl+i", "inspect_result", "Inspect", priority=True, show=False),
+        Binding("ctrl+h", "inspect_download", "Health", priority=True, show=False),
     ]
 
     def __init__(self, config: Config):
@@ -301,6 +412,7 @@ class TGetApp(App):
         self.selected_indices: set[int] = set()
         self._scanned_gids: set[str] = set()  # Track downloads already scanned
         self._routed_gids: set[str] = set()  # Destination corrected in flight
+        self._downloads_wide: bool | None = None  # Status column shown?
         self._stall_tracker: dict[str, int] = {}  # gid -> consecutive stall checks
 
     def compose(self) -> ComposeResult:
@@ -326,9 +438,11 @@ class TGetApp(App):
         downloads = self.query_one("#downloads-table", DataTable)
         downloads.cursor_type = "row"
         downloads.zebra_stripes = True
-        downloads.add_columns(
-            "Name", "Size", "Progress", "Seeds", "Speed", "ETA", "Status"
-        )
+        # Columns are set by _sync_download_columns, which drops Status on a
+        # narrow window. Nothing to add here.
+
+        self.register_theme(VIOLET)
+        self.theme = "violet"
 
         # Start background tasks
         self.check_vpn_status()
@@ -449,7 +563,7 @@ class TGetApp(App):
                     if dl.dir and dl.total_bytes > 1_000_000:
                         self._scan_completed_download(dl)
 
-            table = self.query_one("#downloads-table", DataTable)
+            table = self._sync_download_columns()
             table.clear()
 
             status_bar = self.query_one("#status-bar", StatusBar)
@@ -472,16 +586,18 @@ class TGetApp(App):
                     "error": "red",
                 }.get(dl.status, "white")
 
-                table.add_row(
-                    dl.name[:50] or dl.gid,
+                budget = max(16, min(60, self.size.width - _DOWNLOAD_CHROME))
+                cells = [
+                    fit_name(dl.name or dl.gid, budget),
                     dl.size_human,
                     progress_bar,
                     _peer_cell(dl),
                     dl.speed_human if dl.status == "active" else "—",
                     dl.eta if dl.status == "active" else "—",
-                    Text(dl.status, style=status_color),
-                    key=dl.gid,
-                )
+                ]
+                if self._downloads_wide:
+                    cells.append(Text(dl.status, style=status_color))
+                table.add_row(*cells, key=dl.gid)
         except Exception:
             pass  # aria2 might not be running yet
 
@@ -648,19 +764,7 @@ class TGetApp(App):
         )
         self.selected_indices.clear()
 
-        table = self.query_one("#results-table", DataTable)
-        table.clear()
-
-        for i, result in enumerate(self.search_results):
-            table.add_row(
-                " ",
-                str(i + 1),
-                result.title[:80],
-                result.size_human,
-                str(result.seeders),
-                str(result.leechers),
-                result.indexer[:15],
-            )
+        self._render_results()
 
         status = f"Found {len(self.search_results)} results for '{query}'"
         if self.jackett.last_errors:
@@ -671,6 +775,62 @@ class TGetApp(App):
                 severity="warning",
             )
         info.update(status)
+
+    def _sync_download_columns(self) -> DataTable:
+        """Add or drop the Status column as the window crosses _WIDE.
+
+        Status is the first thing to go on a narrow window: the progress bar
+        and the Seeds colour already say whether a download is moving.
+        """
+        table = self.query_one("#downloads-table", DataTable)
+        wide = self.size.width >= _WIDE
+        if wide == self._downloads_wide and table.columns:
+            return table
+        self._downloads_wide = wide
+        table.clear(columns=True)
+        columns = ["Name", "Size", "Progress", "Seeds", "Speed", "ETA"]
+        if wide:
+            columns.append("Status")
+        table.add_columns(*columns)
+        return table
+
+    def name_budget(self) -> int:
+        """Characters the results Name column may take at this width.
+
+        Everything else in the row has a fixed cost, so Name gets what's left
+        rather than a hard-coded cap that overflowed narrow windows and
+        wasted wide ones.
+        """
+        return max(24, min(100, self.size.width - _RESULT_CHROME))
+
+    def _render_results(self) -> None:
+        """Draw the results table at the current terminal width."""
+        table = self.query_one("#results-table", DataTable)
+        cursor = table.cursor_row
+        table.clear()
+        budget = self.name_budget()
+        for i, result in enumerate(self.search_results):
+            table.add_row(
+                "✓" if i in self.selected_indices else " ",
+                str(i + 1),
+                fit_name(result.title, budget),
+                result.size_human,
+                str(result.seeders),
+                str(result.leechers),
+                result.indexer[:15],
+            )
+        if 0 <= cursor < table.row_count:
+            table.move_cursor(row=cursor)
+
+    async def on_resize(self, event) -> None:
+        """Re-fit both tables when the window changes size."""
+        if self.search_results:
+            self._render_results()
+        await self._update_downloads()
+
+    def action_show_keys(self) -> None:
+        """Show every binding, including those the footer can't fit."""
+        self.push_screen(KeysScreen())
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Toggle selection on a result row."""
