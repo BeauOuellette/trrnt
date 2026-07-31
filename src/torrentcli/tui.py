@@ -41,6 +41,27 @@ _STALL_WARN_TICKS = 30    # ~60s — say something
 _STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peers
 
 
+def _peer_cell(dl: DownloadStatus) -> Text:
+    """Seeders connected, over total peers connected — "9/12".
+
+    aria2's numSeeders counts seeders it actually has a connection to, not
+    what the tracker advertised, so this is the live answer to "is anything
+    on the other end of this?" — the same signal the stall detector uses
+    before giving up on a magnet.
+    """
+    if dl.status not in ("active", "waiting"):
+        return Text("—", style="dim")
+
+    seeders, peers = dl.seeders, dl.connections
+    if seeders > 0:
+        style = "green"          # someone has the whole file
+    elif peers > 0:
+        style = "yellow"         # peers, but all of them partial
+    else:
+        style = "red"            # nothing on the line
+    return Text(f"{seeders}/{peers}", style=style)
+
+
 def is_dead_magnet(dl: DownloadStatus, ticks: int) -> bool:
     """True when a magnet has waited long enough with nobody answering.
 
@@ -305,7 +326,9 @@ class TGetApp(App):
         downloads = self.query_one("#downloads-table", DataTable)
         downloads.cursor_type = "row"
         downloads.zebra_stripes = True
-        downloads.add_columns("Name", "Size", "Progress", "Speed", "ETA", "Status")
+        downloads.add_columns(
+            "Name", "Size", "Progress", "Seeds", "Speed", "ETA", "Status"
+        )
 
         # Start background tasks
         self.check_vpn_status()
@@ -453,6 +476,7 @@ class TGetApp(App):
                     dl.name[:50] or dl.gid,
                     dl.size_human,
                     progress_bar,
+                    _peer_cell(dl),
                     dl.speed_human if dl.status == "active" else "—",
                     dl.eta if dl.status == "active" else "—",
                     Text(dl.status, style=status_color),
