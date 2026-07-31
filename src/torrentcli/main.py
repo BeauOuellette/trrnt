@@ -450,34 +450,35 @@ def status(ctx, watch):
                         else:
                             console.print(f"[yellow]⚠ Scan warning:[/] {scan_result.error}")
 
-                        # Re-route audiobooks based on file content. A clean
-                        # download containing .m4b files belongs in the
-                        # audiobooks folder regardless of how its title was
-                        # tagged at search time.
+                        # Re-route by actual file content. A clean download
+                        # containing .m4b/.cbz/.epub files belongs in its own
+                        # folder regardless of how the title was tagged at
+                        # search time.
                         if scan_result.clean:
                             import shutil
-                            from .security import is_audiobook_dir
-                            if is_audiobook_dir(download_path):
+                            from .security import detect_content_category
+                            content_cat = detect_content_category(download_path)
+                            if content_cat:
                                 try:
-                                    ab_dest = resolve_destination(config, "audiobooks")
+                                    dest = resolve_destination(config, content_cat)
                                 except DestinationUnavailable as e:
                                     console.print(
-                                        f"[yellow]⚠ Audiobook not routed:[/] {e}"
+                                        f"[yellow]⚠ {content_cat} not routed:[/] {e}"
                                     )
                                     continue
-                                ab_root = Path(ab_dest.path)
-                                if ab_root not in download_path.parents:
-                                    ab_root.mkdir(parents=True, exist_ok=True)
-                                    new_path = ab_root / download_path.name
+                                root = Path(dest.path)
+                                if root not in download_path.parents:
+                                    root.mkdir(parents=True, exist_ok=True)
+                                    new_path = root / download_path.name
                                     if new_path.exists():
                                         console.print(
-                                            f"[yellow]⚠ Audiobook target already exists, "
-                                            f"leaving in place:[/] {new_path}"
+                                            f"[yellow]⚠ {content_cat} target already "
+                                            f"exists, leaving in place:[/] {new_path}"
                                         )
                                     else:
                                         shutil.move(str(download_path), str(new_path))
                                         console.print(
-                                            f"[green]🎧 Routed audiobook → {new_path}[/]"
+                                            f"[green]Routed {content_cat} → {new_path}[/]"
                                         )
 
             if not watch:

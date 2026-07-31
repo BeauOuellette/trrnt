@@ -29,9 +29,12 @@ from .config import Config
 from .download import Aria2Client, DownloadStatus
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
-from .security import SecurityScanner, is_audiobook_dir
+from .security import SecurityScanner, detect_content_category
 from .storage import DestinationUnavailable, resolve_destination
 from .vpn import VPNGuard
+
+# Shown when a finished download is re-filed by its contents.
+_CATEGORY_ICONS = {"audiobooks": "🎧", "comics": "💥", "ebooks": "📚"}
 
 
 # Quality tags to extract from torrent titles
@@ -467,29 +470,38 @@ class TGetApp(App):
                 severity="warning",
             )
 
-        # Re-route audiobooks based on file content. Mirrors the CLI
-        # watch-mode behavior in main.py.
-        if result.clean and is_audiobook_dir(download_path):
-            try:
-                ab_dest = resolve_destination(self.config, "audiobooks")
-            except DestinationUnavailable as e:
-                self.notify(f"Audiobook not routed: {e}", severity="warning")
-                return
-            ab_root = Path(ab_dest.path)
-            if ab_root not in download_path.parents:
-                ab_root.mkdir(parents=True, exist_ok=True)
-                new_path = ab_root / download_path.name
-                if new_path.exists():
-                    self.notify(
-                        f"Audiobook target already exists, leaving in place: {new_path}",
-                        severity="warning",
-                    )
-                else:
-                    shutil.move(str(download_path), str(new_path))
-                    self.notify(
-                        f"🎧 Routed audiobook → {new_path}",
-                        severity="information",
-                    )
+        # Re-route by actual file content. Mirrors the CLI watch-mode
+        # behavior in main.py.
+        if not result.clean:
+            return
+        content_cat = detect_content_category(download_path)
+        if content_cat is None:
+            return
+
+        try:
+            dest = resolve_destination(self.config, content_cat)
+        except DestinationUnavailable as e:
+            self.notify(f"{content_cat} not routed: {e}", severity="warning")
+            return
+
+        root = Path(dest.path)
+        if root in download_path.parents:
+            return  # already filed correctly
+
+        root.mkdir(parents=True, exist_ok=True)
+        new_path = root / download_path.name
+        if new_path.exists():
+            self.notify(
+                f"{content_cat} target already exists, leaving in place: {new_path}",
+                severity="warning",
+            )
+            return
+
+        shutil.move(str(download_path), str(new_path))
+        self.notify(
+            f"{_CATEGORY_ICONS.get(content_cat, '📁')} Routed {content_cat} → {new_path}",
+            severity="information",
+        )
 
     def _make_progress(self, percent: float) -> Text:
         """Create a text-based progress bar."""

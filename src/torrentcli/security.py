@@ -56,6 +56,35 @@ DEFAULT_BLOCKED_EXTENSIONS = {
 }
 
 
+# Extensions that identify a download's true content type, regardless of how
+# its title was tagged at search time. Each set holds only formats unique to
+# that category — .mp3 and .pdf are deliberately absent, since they show up in
+# music rips and as bonus material in almost anything.
+AUDIOBOOK_EXTENSIONS = {".m4b"}
+COMIC_EXTENSIONS = {".cbr", ".cbz", ".cb7", ".cbt"}
+EBOOK_EXTENSIONS = {".epub", ".mobi", ".azw", ".azw3", ".fb2", ".lit"}
+
+# Checked in order — a comics pack carrying a stray .epub is still comics.
+_CONTENT_SIGNATURES = (
+    ("audiobooks", AUDIOBOOK_EXTENSIONS),
+    ("comics", COMIC_EXTENSIONS),
+    ("ebooks", EBOOK_EXTENSIONS),
+)
+
+
+def _contains_extension(path: str | Path, extensions: set[str]) -> bool:
+    """True if path is one of these file types, or contains one (recursive)."""
+    path = Path(path)
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.suffix.lower() in extensions
+    for entry in path.rglob("*"):
+        if entry.is_file() and entry.suffix.lower() in extensions:
+            return True
+    return False
+
+
 def is_audiobook_dir(path: str | Path) -> bool:
     """True if path is an .m4b file or contains any .m4b file (recursive).
 
@@ -63,15 +92,29 @@ def is_audiobook_dir(path: str | Path) -> bool:
     the format Apple/Audible use, and bare .mp3 audiobooks are too
     ambiguous (could be music) to re-route automatically.
     """
-    path = Path(path)
-    if not path.exists():
-        return False
-    if path.is_file():
-        return path.suffix.lower() == ".m4b"
-    for entry in path.rglob("*"):
-        if entry.is_file() and entry.suffix.lower() == ".m4b":
-            return True
-    return False
+    return _contains_extension(path, AUDIOBOOK_EXTENSIONS)
+
+
+def is_comic_dir(path: str | Path) -> bool:
+    """True if path is or contains a comic archive (.cbr/.cbz/.cb7/.cbt)."""
+    return _contains_extension(path, COMIC_EXTENSIONS)
+
+
+def is_ebook_dir(path: str | Path) -> bool:
+    """True if path is or contains an e-book (.epub/.mobi/.azw3/...)."""
+    return _contains_extension(path, EBOOK_EXTENSIONS)
+
+
+def detect_content_category(path: str | Path) -> str | None:
+    """The category a finished download actually belongs to, by its contents.
+
+    Returns None when nothing recognisable is found, meaning the category
+    guessed at search time stands.
+    """
+    for category, extensions in _CONTENT_SIGNATURES:
+        if _contains_extension(path, extensions):
+            return category
+    return None
 
 
 class SecurityScanner:

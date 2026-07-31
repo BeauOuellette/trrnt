@@ -68,7 +68,8 @@ def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
     if re.search(r"\b(audiobook|m4b|abook|audible)\b", title_lower):
         return "audiobooks"
 
-    # Jackett category ranges: 2000s = Movies, 5000s = TV, 3000s = Audio
+    # Jackett category ranges: 2000s = Movies, 5000s = TV, 3000s = Audio,
+    # 7000s = Books (7030 is specifically comics, the rest read as e-books).
     if jackett_cats:
         for cat in jackett_cats:
             try:
@@ -79,6 +80,10 @@ def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
                     return "tv"
                 elif 3000 <= num < 4000:
                     return "music"
+                elif num == 7030:
+                    return "comics"
+                elif 7000 <= num < 8000:
+                    return "ebooks"
             except ValueError:
                 pass
 
@@ -93,6 +98,14 @@ def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
 
     if any(kw in title_lower for kw in ["flac", "mp3", "album", "discography"]):
         return "music"
+
+    # Book formats, checked after the TV patterns so an anime or comic-book
+    # adaptation with an SxxExx tag still reads as TV. Only unambiguous format
+    # tokens qualify — bare "comic" or "manga" appear in plenty of video rips.
+    if re.search(r"\b(cbr|cbz|cb7|cbt)\b|\bgraphic novels?\b", title_lower):
+        return "comics"
+    if re.search(r"\b(epub|mobi|azw3?|e-?books?)\b", title_lower):
+        return "ebooks"
 
     return "movies"  # default assumption for video content
 
