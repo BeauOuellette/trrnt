@@ -36,6 +36,29 @@ from .vpn import VPNGuard
 # Shown when a finished download is re-filed by its contents.
 _CATEGORY_ICONS = {"audiobooks": "🎧", "comics": "💥", "ebooks": "📚"}
 
+# Stall detection, counted in refresh ticks of ~2s each.
+_STALL_WARN_TICKS = 30    # ~60s — say something
+_STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peers
+
+
+def is_dead_magnet(dl: DownloadStatus, ticks: int) -> bool:
+    """True when a magnet has waited long enough with nobody answering.
+
+    Elapsed time alone is a poor signal. A magnet connected to peers is still
+    working through the metadata handshake however long it has taken — DHT
+    lookups on a sparse torrent are slow, more so when aria2 is bound to a
+    tunnel with no incoming connections. Only silence means dead.
+
+    total_bytes is 0 until metadata resolves, so a download that is merely
+    slow, or stalled part-way through, never reaches this at all.
+    """
+    return (
+        ticks >= _STALL_REMOVE_TICKS
+        and dl.total_bytes == 0
+        and dl.download_speed == 0
+        and dl.connections == 0
+    )
+
 
 # Quality tags to extract from torrent titles
 _QUALITY_TAGS = [
@@ -351,20 +374,23 @@ class TGetApp(App):
             waiting = await self.aria2.get_waiting()
             stopped = await self.aria2.get_stopped(count=5)
 
-            # Detect stalled downloads (no progress for 60s = 30 checks at 2s)
+            # Detect magnets stuck without metadata (30 checks at 2s ≈ 60s).
+            # total_bytes stays 0 until metadata resolves, so this never
+            # touches a download that is merely slow.
             for dl in active:
                 if dl.total_bytes == 0 and dl.download_speed == 0:
                     self._stall_tracker[dl.gid] = self._stall_tracker.get(dl.gid, 0) + 1
-                    if self._stall_tracker[dl.gid] == 30:  # ~60 seconds
+                    if self._stall_tracker[dl.gid] == _STALL_WARN_TICKS:
                         self.notify(
                             f"Stalled: {dl.name or dl.gid[:12]} — no metadata after 60s",
                             severity="warning",
                         )
-                    elif self._stall_tracker[dl.gid] >= 90:  # ~3 minutes
+                    elif is_dead_magnet(dl, self._stall_tracker[dl.gid]):
                         try:
                             await self.aria2._call("forceRemove", [dl.gid])
                             self.notify(
-                                f"Removed dead download: {dl.name or dl.gid[:12]}",
+                                f"Removed dead download: {dl.name or dl.gid[:12]} "
+                                "— no metadata and no peers",
                                 severity="warning",
                             )
                         except Exception:
