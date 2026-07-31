@@ -353,12 +353,13 @@ def status(ctx, watch):
     config = ctx.obj["config"]
 
     async def _status():
-        from .download import Aria2Client
+        from .download import Aria2Client, reroute_in_flight
         from .security import SecurityScanner
 
         aria2 = Aria2Client(config.get("aria2"))
         scanner = SecurityScanner(config.get("security"))
         scanned_gids: set[str] = set()
+        routed_gids: set[str] = set()
 
         while True:
             try:
@@ -421,6 +422,25 @@ def status(ctx, watch):
                 f"  Waiting: {stats.get('numWaiting', 0)}"
             )
 
+            # Correct destinations while downloads are still running. aria2
+            # knows a torrent's file list once its metadata resolves and takes
+            # a `dir` change on an active download, so this costs a few
+            # megabytes instead of a move at the end.
+            if watch:
+                for dl in active:
+                    if dl.gid in routed_gids or not dl.total_bytes:
+                        continue
+                    routed_gids.add(dl.gid)
+                    try:
+                        moved = await reroute_in_flight(aria2, config, dl)
+                    except Exception as e:
+                        console.print(f"[yellow]⚠ Couldn't re-route:[/] {e}")
+                        continue
+                    if moved:
+                        console.print(
+                            f"[green]→ {dl.name[:40]} is {moved} — moved there now[/]"
+                        )
+
             # Scan-on-complete for --watch mode. Seeding torrents have finished
             # downloading but stay in the active list, so they must be picked
             # up here too — waiting for seed-ratio can mean waiting forever.
@@ -447,27 +467,29 @@ def status(ctx, watch):
                                 download_path = max(children, key=lambda p: p.stat().st_mtime)
                         if download_path is None or not download_path.exists():
                             continue
-                        # Stop seeding before touching the files — aria2 loses
-                        # track of a torrent the moment it is moved.
-                        for call in (aria2.force_remove, aria2.remove_result):
-                            try:
-                                await call(dl.gid)
-                            except Exception:
-                                pass  # already stopped
+                        async def _stop_seeding(gid=dl.gid):
+                            """Release the files before moving them — aria2
+                            loses track of a torrent the moment it is moved."""
+                            for call in (aria2.force_remove, aria2.remove_result):
+                                try:
+                                    await call(gid)
+                                except Exception:
+                                    pass  # already stopped
                         console.print(f"\n[bold]Scanning completed download:[/] {download_path.name}")
                         scan_result = await scanner.full_scan(download_path, expected_bytes=dl.total_bytes)
                         if scan_result.clean:
                             console.print(f"[green]✓ Clean:[/] {scan_result.summary}")
                         elif scan_result.threats or scan_result.blocked_files:
                             console.print(f"[red]✗ FLAGGED:[/] {scan_result.summary}")
+                            await _stop_seeding()  # quarantine moves the files
                             scanner.quarantine(download_path, scan_result)
                         else:
                             console.print(f"[yellow]⚠ Scan warning:[/] {scan_result.error}")
 
-                        # Re-route by actual file content. A clean download
-                        # containing .m4b/.cbz/.epub files belongs in its own
-                        # folder regardless of how the title was tagged at
-                        # search time.
+                        # Safety net for whatever the in-flight re-route could
+                        # not settle. Usually finds the download already in the
+                        # right folder and does nothing — which is what leaves
+                        # it seeding, since only the move below must stop that.
                         if scan_result.clean:
                             import shutil
                             from .security import detect_content_category
@@ -490,6 +512,7 @@ def status(ctx, watch):
                                             f"exists, leaving in place:[/] {new_path}"
                                         )
                                     else:
+                                        await _stop_seeding()
                                         shutil.move(str(download_path), str(new_path))
                                         Path(f"{download_path}.aria2").unlink(
                                             missing_ok=True

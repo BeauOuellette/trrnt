@@ -26,14 +26,10 @@ from textual.widgets import (
 )
 
 from .config import Config
-from .download import Aria2Client, DownloadStatus
+from .download import Aria2Client, DownloadStatus, reroute_in_flight
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
-from .security import (
-    SecurityScanner,
-    detect_category_from_names,
-    detect_content_category,
-)
+from .security import SecurityScanner, detect_content_category
 from .storage import DestinationUnavailable, resolve_destination
 from .vpn import VPNGuard
 
@@ -260,7 +256,7 @@ class TGetApp(App):
         self.search_results: list[TorrentResult] = []
         self.selected_indices: set[int] = set()
         self._scanned_gids: set[str] = set()  # Track downloads already scanned
-        self._previewed_gids: set[str] = set()  # Classified from their file list
+        self._routed_gids: set[str] = set()  # Destination corrected in flight
         self._stall_tracker: dict[str, int] = {}  # gid -> consecutive stall checks
 
     def compose(self) -> ComposeResult:
@@ -377,30 +373,16 @@ class TGetApp(App):
                 else:
                     self._stall_tracker.pop(dl.gid, None)
 
-            # Once a magnet's metadata resolves, aria2 knows the file list.
-            # Classify from it immediately so a comic that was tagged as a
-            # movie at search time announces where it will actually land,
-            # instead of silently sitting in the wrong folder while it runs.
+            # Correct the destination while the download is still running.
+            # aria2 knows the torrent's file list the moment its metadata
+            # resolves, and accepts a `dir` change on an active download —
+            # so a comic tagged as a movie at search time is redirected after
+            # a few megabytes instead of being moved once it finishes.
             for dl in active:
-                if dl.gid in self._previewed_gids or not dl.total_bytes:
+                if dl.gid in self._routed_gids or not dl.total_bytes:
                     continue
-                self._previewed_gids.add(dl.gid)
-                try:
-                    names = await self.aria2.get_files(dl.gid)
-                except Exception:
-                    self._previewed_gids.discard(dl.gid)
-                    continue
-                cat = detect_category_from_names(names)
-                if not cat:
-                    continue
-                try:
-                    target = Path(resolve_destination(self.config, cat).path)
-                except DestinationUnavailable:
-                    continue
-                if target != Path(dl.dir):
-                    self.notify(
-                        f"{dl.name[:34]} is {cat} — filing there when it finishes"
-                    )
+                self._routed_gids.add(dl.gid)
+                await self._reroute_in_flight(dl)
 
             # Scan newly completed downloads (skip tiny metadata downloads).
             # A torrent that has finished downloading but is still seeding
@@ -455,6 +437,17 @@ class TGetApp(App):
         except Exception:
             pass  # aria2 might not be running yet
 
+    async def _reroute_in_flight(self, dl: DownloadStatus) -> None:
+        """Send a running download to the folder its contents call for."""
+        try:
+            category = await reroute_in_flight(self.aria2, self.config, dl)
+        except Exception as e:
+            self.notify(f"Couldn't re-route {dl.name[:30]}: {e}", severity="warning")
+            return
+        if category:
+            icon = _CATEGORY_ICONS.get(category, "📁")
+            self.notify(f"{icon} {dl.name[:32]} is {category} — moved there now")
+
     async def _release_from_aria2(self, dl: DownloadStatus) -> None:
         """Stop seeding a finished download so its files can be moved.
 
@@ -498,11 +491,6 @@ class TGetApp(App):
             self.notify(f"Scan skipped: can't locate download for {dl.gid[:12]}", severity="warning")
             return
 
-        # Release the file before touching it. A finished torrent is still
-        # being seeded, and aria2 loses track of it the moment we move it —
-        # so drop it from aria2 first rather than leaving a broken entry.
-        await self._release_from_aria2(dl)
-
         self.notify(f"Scanning: {download_path.name}...")
 
         result = await self.security.full_scan(
@@ -519,7 +507,9 @@ class TGetApp(App):
                 f"⚠ THREAT: {download_path.name} — {result.summary}",
                 severity="error",
             )
-            # Auto-quarantine only for real threats, not scan errors
+            # Auto-quarantine only for real threats, not scan errors.
+            # Quarantining moves the files, so stop seeding them first.
+            await self._release_from_aria2(dl)
             self.security.quarantine(download_path, result)
             self.notify(
                 f"Quarantined: {download_path.name}",
@@ -532,8 +522,10 @@ class TGetApp(App):
                 severity="warning",
             )
 
-        # Re-route by actual file content. Mirrors the CLI watch-mode
-        # behavior in main.py.
+        # Safety net for anything the in-flight re-route couldn't settle —
+        # a category only the finished files reveal. Normally this finds the
+        # download already in the right place and does nothing, which is what
+        # keeps seeding alive: the move below is what forces us to stop it.
         if not result.clean:
             return
         content_cat = detect_content_category(download_path)
@@ -548,7 +540,7 @@ class TGetApp(App):
 
         root = Path(dest.path)
         if root in download_path.parents:
-            return  # already filed correctly
+            return  # already filed correctly — leave it seeding
 
         root.mkdir(parents=True, exist_ok=True)
         new_path = root / download_path.name
@@ -559,9 +551,9 @@ class TGetApp(App):
             )
             return
 
+        # Only now, with a move actually required, does seeding have to end.
+        await self._release_from_aria2(dl)
         shutil.move(str(download_path), str(new_path))
-        # aria2 leaves its resume file behind when a torrent is dropped
-        # mid-seed; without this it lingers next to the old location forever.
         Path(f"{download_path}.aria2").unlink(missing_ok=True)
         self.notify(
             f"{_CATEGORY_ICONS.get(content_cat, '📁')} Routed {content_cat} → {new_path}",

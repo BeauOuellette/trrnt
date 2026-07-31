@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,65 @@ import httpx
 from rich.console import Console
 
 console = Console()
+
+
+def discard_partial(old_dir: Path, name: str) -> None:
+    """Delete what aria2 left behind in a folder it was redirected away from.
+
+    Only removes a partial that still has its .aria2 control file beside it —
+    that marks it as an unfinished aria2 download, and stops this from ever
+    touching a completed file that happens to share the name.
+    """
+    if not name:
+        return
+    control = old_dir / f"{name}.aria2"
+    if not control.exists():
+        return
+    control.unlink(missing_ok=True)
+    stale = old_dir / name
+    if stale.is_dir():
+        shutil.rmtree(stale, ignore_errors=True)
+    else:
+        stale.unlink(missing_ok=True)
+
+
+async def reroute_in_flight(client: "Aria2Client", config, dl) -> str | None:
+    """Send a running download to the folder its contents call for.
+
+    aria2 knows a torrent's file list as soon as its metadata resolves, and
+    accepts a `dir` change on an active download — it continues into the new
+    folder rather than starting over. Correcting the destination here costs
+    the few megabytes already fetched, instead of a full move at the end that
+    would also have to break seeding.
+
+    Returns the corrected category, or None when nothing needed changing.
+    Raises whatever aria2 raises if the directory change itself fails.
+    """
+    from .security import detect_category_from_names
+    from .storage import DestinationUnavailable, resolve_destination
+
+    try:
+        names = await client.get_files(dl.gid)
+    except Exception:
+        return None  # metadata not resolved yet — caller retries
+
+    category = detect_category_from_names(names)
+    if not category:
+        return None
+
+    try:
+        target = Path(resolve_destination(config, category).path)
+    except DestinationUnavailable:
+        return None
+
+    old_dir = Path(dl.dir)
+    if target == old_dir:
+        return None  # the search-time guess was right
+
+    target.mkdir(parents=True, exist_ok=True)
+    await client.change_dir(dl.gid, str(target))
+    discard_partial(old_dir, dl.name)
+    return category
 
 
 @dataclass
@@ -171,6 +231,15 @@ class Aria2Client:
 
         result = await self._call("addUri", [[url], options])
         return result
+
+    async def change_dir(self, gid: str, download_dir: str) -> str:
+        """Redirect an in-flight download into a different folder.
+
+        aria2 accepts `dir` on an active download and continues into the new
+        location without restarting — but it leaves the partial file and its
+        .aria2 control file behind in the old one, so callers must clean up.
+        """
+        return await self._call("changeOption", [gid, {"dir": download_dir}])
 
     async def get_files(self, gid: str) -> list[str]:
         """File paths inside a download, available once metadata resolves.

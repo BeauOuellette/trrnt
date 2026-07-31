@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -63,6 +64,10 @@ DEFAULT_BLOCKED_EXTENSIONS = {
 AUDIOBOOK_EXTENSIONS = {".m4b"}
 COMIC_EXTENSIONS = {".cbr", ".cbz", ".cb7", ".cbt"}
 EBOOK_EXTENSIONS = {".epub", ".mobi", ".azw", ".azw3", ".fb2", ".lit"}
+VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".wmv"}
+
+# S01E07 / 1x07 — an episode number in a filename settles TV outright.
+_EPISODE_PATTERN = re.compile(r"s\d{1,2}\s?e\d{1,2}|\b\d{1,2}x\d{2}\b", re.IGNORECASE)
 
 # Checked in order — a comics pack carrying a stray .epub is still comics.
 _CONTENT_SIGNATURES = (
@@ -125,10 +130,18 @@ def detect_category_from_names(names) -> str | None:
     the release title. Titles omit the format constantly: a .cbr posted as
     "Series - Issue (2026) (digital)" carries no format token at all.
     """
-    suffixes = {Path(n).suffix.lower() for n in names}
+    paths = [Path(n) for n in names]
+    suffixes = {p.suffix.lower() for p in paths}
     for category, extensions in _CONTENT_SIGNATURES:
         if suffixes & extensions:
             return category
+    # A video file naming an episode is a TV show whatever the release title
+    # claimed. Video without one stays unclassified: movie-vs-TV can't be
+    # settled from a bare filename, and the search-time guess is as good.
+    if suffixes & VIDEO_EXTENSIONS and any(
+        _EPISODE_PATTERN.search(p.name) for p in paths
+    ):
+        return "tv"
     return None
 
 
