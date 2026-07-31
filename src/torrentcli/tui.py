@@ -302,7 +302,13 @@ UNDELIVERABLE_KEYS = {
 
 # Footer contents, in the order they appear. Actions rather than keys, so
 # rebinding a key moves the label with it.
-_FOOTER_LEFT = ["download_selected", "clear_finished", "remove_download", "quit"]
+_FOOTER_LEFT = [
+    "download_selected",
+    "force_reconnect",
+    "clear_finished",
+    "remove_download",
+    "quit",
+]
 _FOOTER_RIGHT = "show_keys"
 
 
@@ -446,6 +452,13 @@ class TGetApp(App):
         margin: 0 1 1 1;
         overflow-x: hidden;
     }
+    Toast {
+        /* Textual's default is 60 wide, which at 102 columns blankets the
+           whole Downloads row while the message is up. Narrower leaves the
+           name, size and progress readable underneath. */
+        width: 44;
+        max-width: 44;
+    }
     #key-bar {
         dock: bottom;
         height: 1;
@@ -475,6 +488,7 @@ class TGetApp(App):
     # the rest keep working and are listed by `?`. All still bind.
     BINDINGS = [
         Binding("ctrl+d", "download_selected", "Download", priority=True),
+        Binding("ctrl+f", "force_reconnect", "Reconnect", priority=True),
         Binding("ctrl+x", "clear_finished", "Clear Done", priority=True),
         # Remove moves off ctrl+w — ctrl+r reads as "remove" far more readily
         # than as "refresh", and the download list already re-renders every 2s
@@ -491,7 +505,6 @@ class TGetApp(App):
         Binding("ctrl+s", "focus_search", "Search", priority=True, show=False),
         Binding("ctrl+a", "select_all", "Select All", priority=True, show=False),
         Binding("ctrl+p", "pause_all", "Pause All", priority=True, show=False),
-        Binding("ctrl+f", "refresh_downloads", "Refresh", priority=True, show=False),
         # Was ctrl+i and ctrl+h. Both were undeliverable — the terminal sends
         # Tab and Backspace for those bytes — so neither key had ever worked.
         Binding("ctrl+e", "inspect_result", "Inspect", priority=True, show=False),
@@ -1284,9 +1297,9 @@ class TGetApp(App):
                     health = "OK"
 
                 lines.append(
-                    f"{name[:30]} | {health} | "
-                    f"{len(peers)}p {seeders}s {unchoked}unchoked {conns}conn "
-                    f"{speed/1024:.0f}KB/s"
+                    f"{name[:28]} · {health} · {len(peers)} peers · "
+                    f"{seeders} seeders · {unchoked} unchoked · "
+                    f"{conns} conns · {speed/1024:.0f} KB/s"
                 )
 
             info.update(" | ".join(lines) if len(lines) == 1 else lines[0])
@@ -1302,9 +1315,45 @@ class TGetApp(App):
         except Exception as e:
             self.notify(f"Inspect failed: {e}", severity="error")
 
-    def action_refresh_downloads(self) -> None:
-        """Manual refresh of download status."""
-        self.check_vpn_status()
+    @work(exclusive=True, group="reconnect")
+    async def action_force_reconnect(self) -> None:
+        """Drop every peer connection and pick up a fresh set.
+
+        aria2 exposes no way to force a tracker announce — 36 RPC methods and
+        none of them announce-related — so pause-and-resume is the only lever
+        there is. On resume it re-announces and rebuilds the peer set instead
+        of grinding on whatever stale connections it was left holding.
+
+        This replaced a "Refresh" binding that only re-checked the VPN, and
+        which would have been pointless anyway: the table already redraws
+        every two seconds.
+        """
+        try:
+            active = await self.aria2.get_active()
+        except Exception as e:
+            self.notify(f"Reconnect failed: {e}", severity="error")
+            return
+
+        if not active:
+            self.notify("Nothing downloading to reconnect", severity="warning")
+            return
+
+        gids = [d.gid for d in active]
+        try:
+            for gid in gids:
+                await self.aria2.pause(gid)
+            # Give aria2 a moment to actually close the sockets; resuming
+            # instantly can hand back the same peers we were trying to shed.
+            await asyncio.sleep(0.75)
+            for gid in gids:
+                await self.aria2.unpause(gid)
+        except Exception as e:
+            self.notify(f"Reconnect failed: {e}", severity="error")
+            return
+
+        self.notify(
+            f"Reconnected {len(gids)} download(s) — new peers on the next announce"
+        )
 
 
 def run_tui(config: Config):

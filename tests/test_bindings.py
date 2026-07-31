@@ -137,3 +137,69 @@ def test_health_reports_through_notifications():
     def check(app):
         return len(app._notifications) > 0
     assert _effect("ctrl+g", check)
+
+
+# ── force reconnect ───────────────────────────────────────────────────────────
+
+def test_reconnect_pauses_then_resumes_every_active_download():
+    """aria2 has no force-announce RPC, so pause-then-resume is the only way
+    to shed stale peers and pull a fresh set."""
+    calls = []
+
+    class Recording:
+        download_dir = "/tmp"
+        async def get_active(self):
+            from torrentcli.download import DownloadStatus
+            return [DownloadStatus(gid="a", status="active"),
+                    DownloadStatus(gid="b", status="active")]
+        async def get_waiting(self, *a, **k): return []
+        async def get_stopped(self, *a, **k): return []
+        async def get_global_stat(self): return {"downloadSpeed": "0", "uploadSpeed": "0"}
+        async def get_files(self, gid): return []
+        async def pause(self, gid): calls.append(("pause", gid))
+        async def unpause(self, gid): calls.append(("unpause", gid))
+
+    async def go():
+        app = _app()
+        app.aria2 = Recording()
+        async with app.run_test(size=(102, 30)) as pilot:
+            await app.action_force_reconnect().wait()
+        return calls
+
+    got = asyncio.run(go())
+    assert got == [("pause", "a"), ("pause", "b"),
+                   ("unpause", "a"), ("unpause", "b")], got
+    # every pause must precede every unpause, or peers are never actually shed
+    assert [c[0] for c in got] == ["pause", "pause", "unpause", "unpause"]
+
+
+def test_reconnect_says_so_when_there_is_nothing_to_reconnect():
+    class Empty:
+        download_dir = "/tmp"
+        async def get_active(self): return []
+        async def get_waiting(self, *a, **k): return []
+        async def get_stopped(self, *a, **k): return []
+        async def get_global_stat(self): return {"downloadSpeed": "0", "uploadSpeed": "0"}
+        async def get_files(self, gid): return []
+
+    async def go():
+        app = _app()
+        app.aria2 = Empty()
+        async with app.run_test(size=(102, 30)):
+            await app.action_force_reconnect().wait()
+            return [str(n.message) for n in app._notifications]
+
+    assert any("Nothing downloading" in m for m in asyncio.run(go()))
+
+
+def test_reconnect_is_in_the_footer_right_of_download():
+    from torrentcli.tui import _FOOTER_LEFT
+    assert _FOOTER_LEFT.index("force_reconnect") == \
+           _FOOTER_LEFT.index("download_selected") + 1
+
+
+def test_the_old_refresh_binding_is_gone():
+    """It only re-checked the VPN despite being labelled Refresh, and the
+    table already redraws every two seconds."""
+    assert not hasattr(TGetApp, "action_refresh_downloads")
+    assert "refresh_downloads" not in {b.action for b in TGetApp.BINDINGS}
