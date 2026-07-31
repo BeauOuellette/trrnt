@@ -504,7 +504,7 @@ class TGetApp(App):
 
         Binding("ctrl+s", "focus_search", "Search", priority=True, show=False),
         Binding("ctrl+a", "select_all", "Select All", priority=True, show=False),
-        Binding("ctrl+p", "pause_all", "Pause All", priority=True, show=False),
+        Binding("ctrl+p", "pause_all", "Pause / Resume", priority=True, show=False),
         # Was ctrl+i and ctrl+h. Both were undeliverable — the terminal sends
         # Tab and Backspace for those bytes — so neither key had ever worked.
         Binding("ctrl+e", "inspect_result", "Inspect", priority=True, show=False),
@@ -1141,12 +1141,30 @@ class TGetApp(App):
         self.selected_indices.clear()
 
     async def action_pause_all(self) -> None:
-        """Pause all active downloads."""
+        """Pause everything — or resume everything, if anything is paused.
+
+        A toggle rather than a one-way pause. There was previously no binding
+        anywhere that could resume, so a download paused by this key, or left
+        paused by a reconnect that failed part-way, could not be restarted
+        from the app at all.
+        """
         try:
-            await self.aria2.pause_all()
-            self.notify("All downloads paused")
+            # aria2 files paused downloads under tellWaiting, not tellActive.
+            waiting = await self.aria2.get_waiting()
+            paused = [d for d in waiting if d.status == "paused"]
         except Exception as e:
             self.notify(f"Pause failed: {e}", severity="error")
+            return
+
+        try:
+            if paused:
+                await self.aria2.unpause_all()
+                self.notify(f"Resumed {len(paused)} download(s)")
+            else:
+                await self.aria2.pause_all()
+                self.notify("All downloads paused — ^p again to resume")
+        except Exception as e:
+            self.notify(f"Failed: {e}", severity="error")
 
     async def action_clear_finished(self) -> None:
         """Clear all dead, finished, and zombie downloads."""
@@ -1315,7 +1333,7 @@ class TGetApp(App):
         except Exception as e:
             self.notify(f"Inspect failed: {e}", severity="error")
 
-    @work(exclusive=True, group="reconnect")
+    @work(group="reconnect")
     async def action_force_reconnect(self) -> None:
         """Drop every peer connection and pick up a fresh set.
 
@@ -1338,22 +1356,44 @@ class TGetApp(App):
             self.notify("Nothing downloading to reconnect", severity="warning")
             return
 
-        gids = [d.gid for d in active]
+        paused: list[str] = []
+        stranded: list[str] = []
         try:
-            for gid in gids:
-                await self.aria2.pause(gid)
+            for dl in active:
+                try:
+                    await self.aria2.pause(dl.gid)
+                    paused.append(dl.gid)
+                except Exception:
+                    continue  # finished or vanished since we listed it
             # Give aria2 a moment to actually close the sockets; resuming
             # instantly can hand back the same peers we were trying to shed.
             await asyncio.sleep(0.75)
-            for gid in gids:
-                await self.aria2.unpause(gid)
-        except Exception as e:
-            self.notify(f"Reconnect failed: {e}", severity="error")
-            return
+        finally:
+            # Resume on every path, including an exception part-way through
+            # the pauses. A download left paused is a far worse outcome than
+            # a reconnect that achieved nothing — the first version returned
+            # early on error and stranded exactly that way.
+            for gid in paused:
+                try:
+                    await self.aria2.unpause(gid)
+                except Exception:
+                    stranded.append(gid)
+            if stranded:
+                try:
+                    await self.aria2.unpause_all()  # blunt, idempotent, last resort
+                    stranded.clear()
+                except Exception:
+                    pass
 
-        self.notify(
-            f"Reconnected {len(gids)} download(s) — new peers on the next announce"
-        )
+        if stranded:
+            self.notify(
+                f"{len(stranded)} download(s) left paused — press ^p to resume",
+                severity="error",
+            )
+        else:
+            self.notify(
+                f"Reconnected {len(paused)} download(s) — new peers on the next announce"
+            )
 
 
 def run_tui(config: Config):

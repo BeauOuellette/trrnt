@@ -185,8 +185,10 @@ def test_reconnect_says_so_when_there_is_nothing_to_reconnect():
     async def go():
         app = _app()
         app.aria2 = Empty()
-        async with app.run_test(size=(102, 30)):
+        async with app.run_test(size=(102, 30)) as pilot:
             await app.action_force_reconnect().wait()
+            for _ in range(3):
+                await pilot.pause()
             return [str(n.message) for n in app._notifications]
 
     assert any("Nothing downloading" in m for m in asyncio.run(go()))
@@ -203,3 +205,107 @@ def test_the_old_refresh_binding_is_gone():
     table already redraws every two seconds."""
     assert not hasattr(TGetApp, "action_refresh_downloads")
     assert "refresh_downloads" not in {b.action for b in TGetApp.BINDINGS}
+
+
+# ── a failed reconnect must never strand a download ───────────────────────────
+
+class _Aria2:
+    """Configurable fake: choose which calls blow up."""
+    download_dir = "/tmp"
+
+    def __init__(self, gids=("a", "b"), pause_fails=(), unpause_fails=()):
+        from torrentcli.download import DownloadStatus
+        self._active = [DownloadStatus(gid=g, status="active") for g in gids]
+        self.pause_fails, self.unpause_fails = set(pause_fails), set(unpause_fails)
+        self.paused, self.resumed, self.unpause_all_called = [], [], 0
+
+    async def get_active(self): return list(self._active)
+    async def get_waiting(self, *a, **k): return []
+    async def get_stopped(self, *a, **k): return []
+    async def get_global_stat(self): return {"downloadSpeed": "0", "uploadSpeed": "0"}
+    async def get_files(self, gid): return []
+
+    async def pause(self, gid):
+        if gid in self.pause_fails:
+            raise RuntimeError(f"cannot pause {gid}")
+        self.paused.append(gid)
+
+    async def unpause(self, gid):
+        if gid in self.unpause_fails:
+            raise RuntimeError(f"cannot unpause {gid}")
+        self.resumed.append(gid)
+
+    async def unpause_all(self):
+        self.unpause_all_called += 1
+        self.resumed.extend(g for g in self.paused if g not in self.resumed)
+
+
+def _reconnect(aria2):
+    async def go():
+        app = _app()
+        app.aria2 = aria2
+        async with app.run_test(size=(102, 30)) as pilot:
+            await app.action_force_reconnect().wait()
+            for _ in range(3):
+                await pilot.pause()
+            return [str(n.message) for n in app._notifications]
+    return asyncio.run(go())
+
+
+def test_everything_paused_is_resumed_when_a_pause_fails_midway():
+    """The failure that stranded a real download: the first version returned
+    early on error, leaving whatever it had already paused paused forever."""
+    aria2 = _Aria2(gids=("a", "b", "c"), pause_fails={"b"})
+    _reconnect(aria2)
+    assert aria2.paused == ["a", "c"], "a failing pause must not abort the rest"
+    assert sorted(aria2.resumed) == ["a", "c"], "everything paused must be resumed"
+
+
+def test_a_failing_unpause_falls_back_to_unpause_all():
+    aria2 = _Aria2(gids=("a", "b"), unpause_fails={"a"})
+    msgs = _reconnect(aria2)
+    assert aria2.unpause_all_called == 1
+    assert sorted(aria2.resumed) == ["a", "b"]
+    assert not any("left paused" in m for m in msgs)
+
+
+def test_a_download_is_never_left_paused_without_saying_so():
+    """If even unpause_all fails, the user must be told which key recovers."""
+    aria2 = _Aria2(gids=("a",), unpause_fails={"a"})
+    async def boom(): raise RuntimeError("rpc down")
+    aria2.unpause_all = boom
+    msgs = _reconnect(aria2)
+    assert any("left paused" in m and "^p" in m for m in msgs), msgs
+
+
+# ── pause is a toggle, so there is always a way back ──────────────────────────
+
+def _pause_toggle(waiting):
+    class A(_Aria2):
+        async def get_waiting(self, *a, **k): return waiting
+        async def pause_all(self): self.paused.append("ALL")
+    aria2 = A()
+    async def go():
+        app = _app()
+        app.aria2 = aria2
+        async with app.run_test(size=(102, 30)) as pilot:
+            await app.action_pause_all()
+            for _ in range(3):
+                await pilot.pause()
+            return aria2, [str(n.message) for n in app._notifications]
+    return asyncio.run(go())
+
+
+def test_pause_pauses_when_nothing_is_paused():
+    aria2, msgs = _pause_toggle([])
+    assert aria2.paused == ["ALL"]
+    assert any("paused" in m for m in msgs)
+
+
+def test_pause_resumes_when_something_is_paused():
+    """Without this there is no key anywhere that can resume a download."""
+    from torrentcli.download import DownloadStatus
+    aria2, msgs = _pause_toggle([DownloadStatus(gid="a", status="paused")])
+    assert aria2.unpause_all_called == 1
+    assert aria2.paused == []
+    assert any("Resumed" in m for m in msgs)
