@@ -75,12 +75,16 @@ _STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peer
 
 # Everything in the results row that isn't the name: marker, index, size,
 # seeders, leechers, source, plus DataTable's cell padding. Name gets the rest.
-_RESULT_CHROME = 50
+_RESULT_CHROME = 54
 # Same for the downloads row, in its narrow form (no Status column).
-_DOWNLOAD_CHROME = 66
+_DOWNLOAD_CHROME = 72
 # Below this the Status column is dropped; the progress bar and Seeds colour
 # already carry that information.
 _WIDE = 140
+# Indexer names are long ("The Pirate Bay") and low-value once you know which
+# indexers you run. Capping it is what buys the Name column its width back —
+# and stops the row spilling past the right edge into a scrollbar.
+SOURCE_MAX = 12
 
 
 def fit_name(name: str, budget: int) -> str:
@@ -94,6 +98,20 @@ def fit_name(name: str, budget: int) -> str:
         return name[:budget] if budget > 0 else ""
     head = int((budget - 1) * 0.42)
     return name[:head] + "…" + name[len(name) - (budget - 1 - head):]
+
+
+def fit_source(indexer: str) -> str:
+    """Cap an indexer name, cut from the right.
+
+    Unlike release titles these differ at the front, so the head is the part
+    worth keeping — and an ellipsis marks it as deliberately shortened rather
+    than looking like a rendering fault.
+    """
+    if len(indexer) <= SOURCE_MAX:
+        return indexer
+    # rstrip first, or a name that happens to break on a space renders as
+    # "The Pirate …" with a gap in front of the ellipsis.
+    return indexer[:SOURCE_MAX - 1].rstrip() + "…"
 
 
 def _peer_cell(dl: DownloadStatus) -> Text:
@@ -287,7 +305,7 @@ class KeysScreen(ModalScreen[None]):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
-        Binding("question_mark", "close", "Close"),
+        Binding("ctrl+k", "close", "Close", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -352,11 +370,13 @@ class TGetApp(App):
     #results-table {
         height: 1fr;
         margin: 0 1;
+        overflow-x: hidden;
     }
     #downloads-table {
         height: auto;
         max-height: 10;
         margin: 0 1 1 1;
+        overflow-x: hidden;
     }
     #info-bar {
         dock: bottom;
@@ -387,10 +407,12 @@ class TGetApp(App):
         # on its own, so the manual refresh it displaces is near-redundant.
         Binding("ctrl+r", "remove_download", "Remove", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
-        # Not ctrl+? — that is DEL (0x7f) at the terminal, not a key Textual
-        # can bind. Plain ? is left non-priority so it still types normally in
-        # the search box, and only opens the overlay from a table.
-        Binding("question_mark", "show_keys", "Keys", key_display="?"),
+        # Not ctrl+? — that is DEL (0x7f) at the terminal, not a bindable key.
+        # Not plain ? either: as a non-priority binding it never reaches
+        # active_bindings while a table holds focus, so it silently never
+        # fired. ctrl+k is priority like the rest and cannot collide with
+        # typing in the search box.
+        Binding("ctrl+k", "show_keys", "Keys", priority=True),
 
         Binding("ctrl+s", "focus_search", "Search", priority=True, show=False),
         Binding("ctrl+a", "select_all", "Select All", priority=True, show=False),
@@ -586,7 +608,7 @@ class TGetApp(App):
                     "error": "red",
                 }.get(dl.status, "white")
 
-                budget = max(16, min(60, self.size.width - _DOWNLOAD_CHROME))
+                budget = max(8, min(60, self.size.width - _DOWNLOAD_CHROME))
                 cells = [
                     fit_name(dl.name or dl.gid, budget),
                     dl.size_human,
@@ -801,7 +823,7 @@ class TGetApp(App):
         rather than a hard-coded cap that overflowed narrow windows and
         wasted wide ones.
         """
-        return max(24, min(100, self.size.width - _RESULT_CHROME))
+        return max(12, min(100, self.size.width - _RESULT_CHROME))
 
     def _render_results(self) -> None:
         """Draw the results table at the current terminal width."""
@@ -817,7 +839,7 @@ class TGetApp(App):
                 result.size_human,
                 str(result.seeders),
                 str(result.leechers),
-                result.indexer[:15],
+                fit_source(result.indexer),
             )
         if 0 <= cursor < table.row_count:
             table.move_cursor(row=cursor)

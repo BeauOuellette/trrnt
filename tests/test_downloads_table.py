@@ -11,7 +11,7 @@ import pytest
 
 from torrentcli.download import DownloadStatus
 from torrentcli.search import TorrentResult
-from torrentcli.tui import TGetApp, fit_name
+from torrentcli.tui import SOURCE_MAX, TGetApp, fit_name, fit_source
 
 
 class FakeConfig:
@@ -199,3 +199,60 @@ def test_resizing_refits_the_results_without_losing_the_row():
         return before, app.query_one("#results-table").row_count
     before, after = _run((102, 40), body)
     assert before == after == 2
+
+
+# ── no horizontal scrolling, ever ─────────────────────────────────────────────
+
+WIDE_SOURCE = "The Pirate Bay"
+
+
+def _busy_results(n=46):
+    """Worst case: long titles, four-digit peer counts, long indexer name."""
+    out = []
+    for i in range(n):
+        r = _result(
+            "The Super Mario Galaxy Movie 2026 2160p UHD BluRay REMUX "
+            "DV HDR10+ TrueHD Atmos 7.1-UnKn0wn"
+        )
+        r.seeders, r.leechers = 1534, 1828
+        r.indexer = WIDE_SOURCE
+        r.size_bytes = 58_800_000_000
+        out.append(r)
+    return out
+
+
+@pytest.mark.parametrize("width", [80, 102, 120, 140, 206])
+def test_no_horizontal_scrollbar_at_any_width(width):
+    """The user never wants to scroll sideways. overflow-x is hidden, so this
+    guards the stronger property: the scrollbar is never even wanted."""
+    async def body(app):
+        app.search_results = _busy_results()
+        app._render_results()
+        await app._update_downloads()
+        out = {}
+        for tid in ("#results-table", "#downloads-table"):
+            t = app.query_one(tid)
+            out[tid] = (t.show_horizontal_scrollbar,
+                        t.virtual_size.width, t.size.width)
+        return out
+    got = _run((width, 40), body)
+    for tid, (bar, virtual, visible) in got.items():
+        assert bar is False, f"{tid} shows a horizontal scrollbar at {width}"
+        assert virtual <= visible, (
+            f"{tid} content is {virtual} wide in a {visible} viewport at {width} cols")
+
+
+def test_source_is_truncated_so_the_row_fits():
+    async def body(app):
+        app.search_results = _busy_results(3)
+        app._render_results()
+        t = app.query_one("#results-table")
+        return str(t.get_row_at(0)[6])
+    src = _run((102, 40), body)
+    assert len(src) <= SOURCE_MAX
+    assert src == "The Pirate…", "an ellipsis marks it as cut, not broken"
+
+
+def test_short_indexer_names_are_left_alone():
+    assert fit_source("Jackett") == "Jackett"
+    assert fit_source("x" * SOURCE_MAX) == "x" * SOURCE_MAX
