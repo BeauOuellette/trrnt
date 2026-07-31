@@ -353,7 +353,7 @@ def status(ctx, watch):
     config = ctx.obj["config"]
 
     async def _status():
-        from .download import Aria2Client, reroute_in_flight
+        from .download import Aria2Client, predict_category
         from .security import SecurityScanner
 
         aria2 = Aria2Client(config.get("aria2"))
@@ -422,23 +422,22 @@ def status(ctx, watch):
                 f"  Waiting: {stats.get('numWaiting', 0)}"
             )
 
-            # Correct destinations while downloads are still running. aria2
-            # knows a torrent's file list once its metadata resolves and takes
-            # a `dir` change on an active download, so this costs a few
-            # megabytes instead of a move at the end.
+            # Flag where each download will be filed once it finishes. A
+            # torrent's folder is fixed by aria2 when it is created, so this
+            # reports the destination rather than changing it.
             if watch:
                 for dl in active:
                     if dl.gid in routed_gids or not dl.total_bytes:
                         continue
                     routed_gids.add(dl.gid)
                     try:
-                        moved = await reroute_in_flight(aria2, config, dl)
-                    except Exception as e:
-                        console.print(f"[yellow]⚠ Couldn't re-route:[/] {e}")
+                        predicted = await predict_category(aria2, config, dl)
+                    except Exception:
                         continue
-                    if moved:
+                    if predicted:
                         console.print(
-                            f"[green]→ {dl.name[:40]} is {moved} — moved there now[/]"
+                            f"[green]→ {dl.name[:40]} is {predicted} — "
+                            f"filing there when done[/]"
                         )
 
             # Scan-on-complete for --watch mode. Seeding torrents have finished

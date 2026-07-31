@@ -26,7 +26,7 @@ from textual.widgets import (
 )
 
 from .config import Config
-from .download import Aria2Client, DownloadStatus, reroute_in_flight
+from .download import Aria2Client, DownloadStatus, predict_category
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
 from .security import SecurityScanner, detect_content_category
@@ -373,16 +373,14 @@ class TGetApp(App):
                 else:
                     self._stall_tracker.pop(dl.gid, None)
 
-            # Correct the destination while the download is still running.
-            # aria2 knows the torrent's file list the moment its metadata
-            # resolves, and accepts a `dir` change on an active download —
-            # so a comic tagged as a movie at search time is redirected after
-            # a few megabytes instead of being moved once it finishes.
+            # Flag where each download will actually be filed, as soon as
+            # aria2 resolves its file list. Torrents can't be redirected once
+            # created, so this only reports — the move happens on completion.
             for dl in active:
                 if dl.gid in self._routed_gids or not dl.total_bytes:
                     continue
                 self._routed_gids.add(dl.gid)
-                await self._reroute_in_flight(dl)
+                await self._announce_category(dl)
 
             # Scan newly completed downloads (skip tiny metadata downloads).
             # A torrent that has finished downloading but is still seeding
@@ -437,16 +435,20 @@ class TGetApp(App):
         except Exception:
             pass  # aria2 might not be running yet
 
-    async def _reroute_in_flight(self, dl: DownloadStatus) -> None:
-        """Send a running download to the folder its contents call for."""
+    async def _announce_category(self, dl: DownloadStatus) -> None:
+        """Say where a running download will end up, once its files are known.
+
+        A torrent can't be redirected mid-flight — aria2 fixes its paths when
+        the download is created — so this is information, not a move. The
+        filing happens when the download finishes.
+        """
         try:
-            category = await reroute_in_flight(self.aria2, self.config, dl)
-        except Exception as e:
-            self.notify(f"Couldn't re-route {dl.name[:30]}: {e}", severity="warning")
+            category = await predict_category(self.aria2, self.config, dl)
+        except Exception:
             return
         if category:
             icon = _CATEGORY_ICONS.get(category, "📁")
-            self.notify(f"{icon} {dl.name[:32]} is {category} — moved there now")
+            self.notify(f"{icon} {dl.name[:30]} is {category} — filing there when done")
 
     async def _release_from_aria2(self, dl: DownloadStatus) -> None:
         """Stop seeding a finished download so its files can be moved.
