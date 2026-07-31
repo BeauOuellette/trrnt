@@ -266,6 +266,18 @@ def test_auto_save_interval_is_not_zero(daemon, monkeypatch):
     daemon._owned_pid = None
 
 
+def test_seeding_torrents_survive_a_restart(daemon, monkeypatch):
+    """A finished-but-seeding torrent counts as 'completed' to aria2, so
+    plain --save-session drops it — and with it, the chance to file the
+    download by its contents on the next launch."""
+    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    captured = capture_spawn(monkeypatch)
+    monkeypatch.setattr(daemon, "is_rpc_alive", lambda timeout=2.0: False)
+    daemon._spawn()
+    assert "--force-save=true" in captured["args"]
+    daemon._owned_pid = None
+
+
 def test_event_poll_is_opt_in(tmp_path, monkeypatch):
     """Unset by default (aria2's own choice); passed through when configured."""
     monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)

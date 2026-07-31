@@ -300,6 +300,12 @@ class Aria2Daemon:
             # Keep the queue across the now CLI-scoped daemon lifetime.
             f"--save-session={self._session_file}",
             "--save-session-interval=60",
+            # Without this, --save-session skips anything aria2 considers
+            # completed — which includes a torrent that has finished
+            # downloading and is only seeding. Those were dropped on every
+            # restart, taking with them the chance to file the download by
+            # its contents. aria2's own docs name this exact case.
+            "--force-save=true",
             # aria2's default is already 60s; pin it so a stray value in the
             # user's ~/.aria2/aria2.conf cannot disable control-file saving and
             # cost them resume data when we shut the daemon down.
