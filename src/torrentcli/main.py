@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Config
+from .storage import DestinationUnavailable, resolve_destination
 
 console = Console()
 
@@ -264,7 +265,6 @@ async def _interactive_download(config: Config, results):
 
     # Add to aria2
     aria2 = Aria2Client(config.get("aria2"))
-    categories = config.get("categories", default={})
     plex = PlexClient(config.get("plex"))
     scanned_cats = set()
 
@@ -274,15 +274,21 @@ async def _interactive_download(config: Config, results):
             console.print(f"  [red]✗[/] {result.title[:50]} — no download URL")
             continue
 
-        cat_config = categories.get(result.category, categories.get("other", {}))
-        download_dir = cat_config.get("path", aria2.download_dir)
+        try:
+            dest = resolve_destination(config, result.category, aria2.download_dir)
+        except DestinationUnavailable as e:
+            console.print(f"  [red]✗[/] {result.title[:50]} — {e}")
+            continue
 
         try:
             if url.startswith("magnet:"):
-                gid = await aria2.add_magnet(url, download_dir=download_dir)
+                gid = await aria2.add_magnet(url, download_dir=dest.path)
             else:
-                gid = await aria2.add_torrent_url(url, download_dir=download_dir)
+                gid = await aria2.add_torrent_url(url, download_dir=dest.path)
             console.print(f"  [green]✓[/] {result.title[:50]} → {result.category} (gid: {gid})")
+            if dest.redirected:
+                console.print(f"     [yellow]⚠ {dest.notice}[/]")
+                continue  # not in the library, so nothing for Plex to find
 
             # Plex scan
             if config.get("plex", "enabled") and result.category not in scanned_cats:
@@ -316,16 +322,21 @@ def add(ctx, url, category):
                 sys.exit(1)
 
         aria2 = Aria2Client(config.get("aria2"))
-        categories = config.get("categories", default={})
-        cat_config = categories.get(category, categories.get("other", {}))
-        download_dir = cat_config.get("path", aria2.download_dir)
+
+        try:
+            dest = resolve_destination(config, category, aria2.download_dir)
+        except DestinationUnavailable as e:
+            console.print(f"[red]✗ Failed:[/] {e}")
+            sys.exit(1)
 
         try:
             if url.startswith("magnet:"):
-                gid = await aria2.add_magnet(url, download_dir=download_dir)
+                gid = await aria2.add_magnet(url, download_dir=dest.path)
             else:
-                gid = await aria2.add_torrent_url(url, download_dir=download_dir)
-            console.print(f"[green]✓ Added[/] (gid: {gid}) → {download_dir}")
+                gid = await aria2.add_torrent_url(url, download_dir=dest.path)
+            console.print(f"[green]✓ Added[/] (gid: {gid}) → {dest.path}")
+            if dest.redirected:
+                console.print(f"[yellow]⚠ {dest.notice}[/]")
         except Exception as e:
             console.print(f"[red]✗ Failed:[/] {e}")
 
@@ -447,9 +458,14 @@ def status(ctx, watch):
                             import shutil
                             from .security import is_audiobook_dir
                             if is_audiobook_dir(download_path):
-                                ab_root = Path(
-                                    config.get("categories", "audiobooks", "path")
-                                ).expanduser()
+                                try:
+                                    ab_dest = resolve_destination(config, "audiobooks")
+                                except DestinationUnavailable as e:
+                                    console.print(
+                                        f"[yellow]⚠ Audiobook not routed:[/] {e}"
+                                    )
+                                    continue
+                                ab_root = Path(ab_dest.path)
                                 if ab_root not in download_path.parents:
                                     ab_root.mkdir(parents=True, exist_ok=True)
                                     new_path = ab_root / download_path.name

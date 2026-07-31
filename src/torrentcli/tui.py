@@ -30,6 +30,7 @@ from .download import Aria2Client, DownloadStatus
 from .plex import PlexClient
 from .search import JackettSearch, TorrentResult
 from .security import SecurityScanner, is_audiobook_dir
+from .storage import DestinationUnavailable, resolve_destination
 from .vpn import VPNGuard
 
 
@@ -469,9 +470,12 @@ class TGetApp(App):
         # Re-route audiobooks based on file content. Mirrors the CLI
         # watch-mode behavior in main.py.
         if result.clean and is_audiobook_dir(download_path):
-            ab_root = Path(
-                self.config.get("categories", "audiobooks", "path")
-            ).expanduser()
+            try:
+                ab_dest = resolve_destination(self.config, "audiobooks")
+            except DestinationUnavailable as e:
+                self.notify(f"Audiobook not routed: {e}", severity="warning")
+                return
+            ab_root = Path(ab_dest.path)
             if ab_root not in download_path.parents:
                 ab_root.mkdir(parents=True, exist_ok=True)
                 new_path = ab_root / download_path.name
@@ -614,18 +618,29 @@ class TGetApp(App):
             self.notify("No download URL", severity="error")
             return
 
-        categories = self.config.get("categories", default={})
-        cat_config = categories.get(result.category, categories.get("other", {}))
-        download_dir = cat_config.get("path", self.aria2.download_dir)
+        try:
+            dest = resolve_destination(
+                self.config, result.category, self.aria2.download_dir
+            )
+        except DestinationUnavailable as e:
+            self.notify(f"Failed: {e}", severity="error")
+            return
 
         try:
             if url.startswith("magnet:"):
-                await self.aria2.add_magnet(url, download_dir=download_dir)
+                await self.aria2.add_magnet(url, download_dir=dest.path)
             else:
-                await self.aria2.add_torrent_url(url, download_dir=download_dir)
-            self.notify(f"Added: {result.title[:50]}")
+                await self.aria2.add_torrent_url(url, download_dir=dest.path)
         except Exception as e:
             self.notify(f"Failed: {e}", severity="error")
+            return
+
+        if dest.redirected:
+            self.notify(
+                f"Added: {result.title[:40]} — {dest.notice}", severity="warning"
+            )
+        else:
+            self.notify(f"Added: {result.title[:50]}")
 
     def _open_info_url(self, result: TorrentResult) -> None:
         """Open the torrent info URL in the default browser."""
@@ -684,8 +699,9 @@ class TGetApp(App):
             self.notify(f"VPN check failed: {e}", severity="error")
             return
 
-        categories = self.config.get("categories", default={})
         added = 0
+        notices: set[str] = set()
+        redirected_cats: set[str] = set()
 
         for idx in sorted(self.selected_indices):
             result = self.search_results[idx]
@@ -694,24 +710,36 @@ class TGetApp(App):
                 self.notify(f"No URL for: {result.title[:40]}", severity="warning")
                 continue
 
-            # Determine download directory from category
-            cat_config = categories.get(result.category, categories.get("other", {}))
-            download_dir = cat_config.get("path", self.aria2.download_dir)
+            # Determine download directory from category, falling back to a
+            # local path when the category's drive isn't connected.
+            try:
+                dest = resolve_destination(
+                    self.config, result.category, self.aria2.download_dir
+                )
+            except DestinationUnavailable as e:
+                self.notify(f"Skipped {result.title[:40]}: {e}", severity="error")
+                continue
 
             try:
                 if url.startswith("magnet:"):
-                    await self.aria2.add_magnet(url, download_dir=download_dir)
+                    await self.aria2.add_magnet(url, download_dir=dest.path)
                 else:
-                    await self.aria2.add_torrent_url(url, download_dir=download_dir)
+                    await self.aria2.add_torrent_url(url, download_dir=dest.path)
                 added += 1
+                if dest.redirected:
+                    notices.add(dest.notice)
+                    redirected_cats.add(result.category)
             except Exception as e:
                 self.notify(f"Failed: {result.title[:40]}: {e}", severity="error")
 
         self.notify(f"Added {added} download(s)")
+        for notice in sorted(notices):
+            self.notify(notice, severity="warning")
 
-        # Trigger Plex scan for relevant categories
+        # Trigger Plex scan for relevant categories. Redirected downloads
+        # never reach the library, so scanning for them would find nothing.
         if self.config.get("plex", "enabled"):
-            scanned_cats = set()
+            scanned_cats = set(redirected_cats)
             for idx in sorted(self.selected_indices):
                 cat = self.search_results[idx].category
                 if cat not in scanned_cats:

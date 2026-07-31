@@ -11,7 +11,11 @@ from typing import Any
 
 from rich.console import Console
 
+from .storage import is_available
+
 console = Console()
+
+DEFAULT_QUARANTINE_DIR = "~/Downloads/quarantine"
 
 
 @dataclass
@@ -93,6 +97,11 @@ class SecurityScanner:
             }
         else:
             self.blocked_extensions = DEFAULT_BLOCKED_EXTENSIONS.copy()
+
+        # Quarantine has to work even when the drive it was configured on
+        # isn't connected — otherwise a flagged download has nowhere to go.
+        if not is_available(self.quarantine_dir):
+            self.quarantine_dir = Path(DEFAULT_QUARANTINE_DIR).expanduser()
 
         # Ensure quarantine directory exists
         self.quarantine_dir.mkdir(parents=True, exist_ok=True)

@@ -66,6 +66,22 @@ categories:
   other:
     path: "~/Downloads/torrents"
 
+# What happens when a category's drive isn't connected.
+# Media categories usually live on an external drive; without this, a download
+# to an unplugged drive fails partway through with a cryptic aria2 error.
+destinations:
+  # "fallback" → download locally instead and say so
+  # "abort"    → refuse the download with a clear error
+  on_unavailable: "fallback"
+  # Where redirected downloads land. The category name is appended,
+  # so a movie becomes ~/Downloads/torrents/movies.
+  fallback_path: "~/Downloads/torrents"
+  # Require paths on external volumes to be real mount points. Without this,
+  # the empty folder an unplugged drive leaves behind would quietly absorb
+  # downloads onto the boot disk — and the real drive would then mount
+  # alongside it as "<name> 1".
+  require_mount: true
+
 # Security settings
 security:
   # ClamAV virus scanning

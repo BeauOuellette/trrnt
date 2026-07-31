@@ -48,6 +48,19 @@ DEFAULTS: dict[str, Any] = {
         "audiobooks": {"path": "~/Media/Audiobooks"},
         "other": {"path": "~/Downloads/torrents"},
     },
+    "destinations": {
+        # What to do when a category's drive isn't connected:
+        #   "fallback" → download locally instead and say so
+        #   "abort"    → refuse the download with a clear error
+        "on_unavailable": "fallback",
+        # Where redirected downloads land. The category name is appended,
+        # so a movie becomes ~/Downloads/torrents/movies.
+        "fallback_path": "~/Downloads/torrents",
+        # Require paths on external volumes to be real mount points. Without
+        # this, the empty folder an unplugged drive leaves behind would
+        # quietly absorb downloads onto the boot disk.
+        "require_mount": True,
+    },
     "quality_exclude": ["CAM", "TS", "HDCAM"],
     "security": {
         "clamav_enabled": True,
@@ -97,6 +110,10 @@ class Config:
         self._data["aria2"]["download_dir"] = str(
             Path(self._data["aria2"]["download_dir"]).expanduser()
         )
+        if "fallback_path" in self._data.get("destinations", {}):
+            self._data["destinations"]["fallback_path"] = str(
+                Path(self._data["destinations"]["fallback_path"]).expanduser()
+            )
         if "security" in self._data and "quarantine_dir" in self._data["security"]:
             self._data["security"]["quarantine_dir"] = str(
                 Path(self._data["security"]["quarantine_dir"]).expanduser()
