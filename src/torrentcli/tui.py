@@ -60,6 +60,7 @@ VIOLET = Theme(
     dark=True,
 )
 
+ACCENT = "#af87d7"      # 140 — same as the theme's primary
 SEED_GOOD = "#5fd7af"   # a seeder is connected
 SEED_WARN = "#d7af5f"   # peers, but all partial
 SEED_NONE = "#ff5f87"   # nothing on the line
@@ -285,6 +286,55 @@ class InspectScreen(ModalScreen[str]):
         self.dismiss("open")
 
 
+# Footer contents, in the order they appear. Actions rather than keys, so
+# rebinding a key moves the label with it.
+_FOOTER_LEFT = ["download_selected", "clear_finished", "remove_download", "quit"]
+_FOOTER_RIGHT = "show_keys"
+
+
+class KeyBar(Static):
+    """The footer, rendered directly rather than by Textual's Footer.
+
+    Textual's Footer orders keys by how it collects bindings — not by the
+    order they are declared — and reserves the right-hand slot for the command
+    palette, which is why ctrl+p showed up there labelled "Pause All". Neither
+    is configurable, and both matter here: the order is the muscle memory, and
+    the right-hand slot is where Keys belongs.
+    """
+
+    def _entries(self, actions) -> list[tuple[str, str]]:
+        by_action = {b.action: b for b in self.app.BINDINGS}
+        out = []
+        for action in actions:
+            binding = by_action.get(action)
+            if binding:
+                out.append((_key_label(binding.key), binding.description))
+        return out
+
+    def render(self) -> Text:
+        left = Text()
+        for i, (key, label) in enumerate(self._entries(_FOOTER_LEFT)):
+            if i:
+                left.append("   ")
+            left.append(key, style=f"bold {ACCENT}")
+            left.append(f" {label}")
+
+        right = Text()
+        for key, label in self._entries([_FOOTER_RIGHT]):
+            right.append(key, style=f"bold {ACCENT}")
+            right.append(f" {label}")
+
+        bar = Text(" ")
+        bar.append_text(left)
+        # Push Keys to the right edge, but never off it: on a window too narrow
+        # to hold both, the left keys win and Keys drops rather than wrapping.
+        gap = self.size.width - len(left.plain) - len(right.plain) - 2
+        if gap >= 1:
+            bar.append(" " * gap)
+            bar.append_text(right)
+        return bar
+
+
 class KeysScreen(ModalScreen[None]):
     """Every binding, including the ones the footer has no room for.
 
@@ -352,6 +402,10 @@ class StatusBar(Static):
 class TGetApp(App):
     """Main TUI application."""
 
+    # Frees ctrl+p for Pause All, and removes the right-hand footer slot
+    # Textual reserves for the palette — Keys goes there instead.
+    ENABLE_COMMAND_PALETTE = False
+
     CSS = """
     Screen {
         layout: vertical;
@@ -377,6 +431,12 @@ class TGetApp(App):
         max-height: 10;
         margin: 0 1 1 1;
         overflow-x: hidden;
+    }
+    #key-bar {
+        dock: bottom;
+        height: 1;
+        background: $surface;
+        color: $text;
     }
     #info-bar {
         dock: bottom;
@@ -446,7 +506,7 @@ class TGetApp(App):
         yield Label("Downloads", classes="section-label")
         yield DataTable(id="downloads-table")
         yield Static("", id="info-bar")
-        yield Footer()
+        yield KeyBar(id="key-bar")
 
     def on_mount(self) -> None:
         """Initialize tables and start background tasks."""

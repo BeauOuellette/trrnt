@@ -11,7 +11,14 @@ import pytest
 
 from torrentcli.download import DownloadStatus
 from torrentcli.search import TorrentResult
-from torrentcli.tui import SOURCE_MAX, TGetApp, fit_name, fit_source
+from torrentcli.tui import (
+    _FOOTER_LEFT,
+    _FOOTER_RIGHT,
+    SOURCE_MAX,
+    TGetApp,
+    fit_name,
+    fit_source,
+)
 
 
 class FakeConfig:
@@ -256,3 +263,55 @@ def test_source_is_truncated_so_the_row_fits():
 def test_short_indexer_names_are_left_alone():
     assert fit_source("Jackett") == "Jackett"
     assert fit_source("x" * SOURCE_MAX) == "x" * SOURCE_MAX
+
+
+# ── the key bar ───────────────────────────────────────────────────────────────
+
+def test_footer_order_and_right_aligned_keys():
+    """The order is muscle memory, so it is pinned, not left to Textual's
+    binding-collection order."""
+    async def body(app):
+        bar = app.query_one("#key-bar")
+        return bar.render().plain
+    line = _run((102, 40), body)
+    assert line.index("Download") < line.index("Clear Done") < \
+           line.index("Remove") < line.index("Quit") < line.index("Keys")
+    assert line.rstrip().endswith("^k Keys"), "Keys must sit on the right edge"
+    assert line.lstrip().startswith("^d Download")
+
+
+def test_pause_all_is_not_in_the_footer():
+    """It lives in the ^k overlay only. It previously appeared right-aligned
+    because ctrl+p is Textual's command-palette key."""
+    async def body(app):
+        return app.query_one("#key-bar").render().plain
+    assert "Pause" not in _run((102, 40), body)
+
+
+def test_the_command_palette_is_off_so_ctrl_p_is_ours():
+    assert TGetApp.ENABLE_COMMAND_PALETTE is False
+
+
+def test_the_bar_spans_the_window():
+    async def body(app):
+        return app.query_one("#key-bar").render().plain
+    for width in (102, 206):
+        line = _run((width, 40), body)
+        assert len(line) == width - 1, f"bar is {len(line)} at width {width}"
+
+
+def test_a_narrow_window_drops_keys_rather_than_wrapping():
+    async def body(app):
+        return app.query_one("#key-bar").render().plain
+    line = _run((40, 20), body)
+    assert "Keys" not in line
+    assert "Download" in line
+
+
+def test_every_hidden_binding_is_reachable_from_the_overlay():
+    """Anything not in the footer must be listed by ^k, or it is invisible."""
+    shown = {a for a in _FOOTER_LEFT} | {_FOOTER_RIGHT}
+    listed = {b.action for b in TGetApp.BINDINGS if b.action != "show_keys"}
+    hidden = {b.action for b in TGetApp.BINDINGS if not b.show}
+    assert hidden <= listed, f"unreachable: {hidden - listed}"
+    assert "pause_all" in hidden and "pause_all" in listed
