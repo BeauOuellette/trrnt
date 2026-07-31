@@ -34,33 +34,62 @@ class VPNGuard:
         self._kill_switch_task: asyncio.Task | None = None
         self._on_vpn_drop: list[Callable] = []
 
-    def find_vpn_interface(self) -> str | None:
-        """Find active VPN tunnel interface."""
+    def _run(self, *argv: str) -> str:
+        """Run a command, returning stdout or "" on any failure."""
         try:
-            if platform.system() == "Darwin":
-                result = subprocess.run(
-                    ["/sbin/ifconfig"], capture_output=True, text=True, timeout=5,
-                    stdin=subprocess.DEVNULL,
-                )
-                # Find utun interfaces that are UP
-                interfaces = re.findall(
-                    rf"({self.interface_prefix}\d+):.*?flags=.*?<UP",
-                    result.stdout,
-                    re.DOTALL,
-                )
-                return interfaces[-1] if interfaces else None
-            else:
-                # Linux: check for tun/wg interfaces
-                result = subprocess.run(
-                    ["ip", "link", "show"], capture_output=True, text=True, timeout=5
-                )
-                for prefix in [self.interface_prefix, "tun", "wg", "proton"]:
-                    match = re.search(rf"\d+: ({prefix}\d+):.*?state UP", result.stdout)
-                    if match:
-                        return match.group(1)
-                return None
-        except Exception as e:
+            result = subprocess.run(
+                argv, capture_output=True, text=True, timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+            return result.stdout
+        except Exception:
+            return ""
+
+    def default_route_interface(self) -> str | None:
+        """The interface carrying default traffic right now."""
+        if platform.system() == "Darwin":
+            out = self._run("/sbin/route", "-n", "get", "default")
+            match = re.search(r"^\s*interface:\s*(\S+)", out, re.MULTILINE)
+        else:
+            out = self._run("ip", "route", "show", "default")
+            match = re.search(r"\bdev\s+(\S+)", out)
+        return match.group(1) if match else None
+
+    def interface_ipv4(self, interface: str) -> str | None:
+        """The IPv4 address bound to an interface, if it has one."""
+        if not interface:
             return None
+        if platform.system() == "Darwin":
+            out = self._run("/sbin/ifconfig", interface)
+            match = re.search(r"^\s*inet\s+(\d+\.\d+\.\d+\.\d+)", out, re.MULTILINE)
+        else:
+            out = self._run("ip", "-4", "addr", "show", interface)
+            match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)", out)
+        return match.group(1) if match else None
+
+    def _is_tunnel(self, interface: str) -> bool:
+        prefixes = (self.interface_prefix,)
+        if platform.system() != "Darwin":
+            prefixes += ("tun", "wg", "proton")
+        return interface.startswith(prefixes)
+
+    def find_vpn_interface(self) -> str | None:
+        """The tunnel actually carrying traffic, or None.
+
+        "Some utun is UP" proves nothing on macOS: it keeps several utun
+        devices up permanently for iCloud Private Relay and Handoff, none of
+        which carry ordinary traffic and none of which have an IPv4 address.
+        Matching those made the VPN check pass with the VPN switched off.
+
+        The tunnel that matters is the one the default route points at, and
+        it must have an address we can bind a socket to.
+        """
+        interface = self.default_route_interface()
+        if not interface or not self._is_tunnel(interface):
+            return None  # traffic is going out the physical interface
+        if not self.interface_ipv4(interface):
+            return None  # nothing to bind to
+        return interface
 
     async def get_external_ip(self) -> str:
         """Get current external IP."""

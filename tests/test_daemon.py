@@ -535,3 +535,29 @@ def test_sigkilled_cli_still_loses_its_daemon(tmp_path):
     proc.wait(timeout=60)
     assert wait_gone(aria_pid, timeout=60), \
         "aria2c did not honour --stop-with-process after the CLI was SIGKILLed"
+
+
+def test_bind_interface_is_passed_to_aria2(tmp_path, monkeypatch):
+    """Binding every socket to the tunnel is the only thing that actually keeps
+    BitTorrent inside the VPN — a per-download option leaves DHT and tracker
+    announces on the default route."""
+    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    captured = capture_spawn(monkeypatch)
+    d = Aria2Daemon({"rpc_url": "http://localhost:6800/jsonrpc"},
+                    state_dir=tmp_path, startup_timeout=0,
+                    bind_interface="utun4")
+    monkeypatch.setattr(d, "is_rpc_alive", lambda timeout=2.0: False)
+    d._spawn()
+    assert "--interface=utun4" in captured["args"]
+    d._owned_pid = None
+
+
+def test_no_interface_flag_when_unbound(tmp_path, monkeypatch):
+    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    captured = capture_spawn(monkeypatch)
+    d = Aria2Daemon({"rpc_url": "http://localhost:6800/jsonrpc"},
+                    state_dir=tmp_path, startup_timeout=0)
+    monkeypatch.setattr(d, "is_rpc_alive", lambda timeout=2.0: False)
+    d._spawn()
+    assert not any(a.startswith("--interface") for a in captured["args"])
+    d._owned_pid = None

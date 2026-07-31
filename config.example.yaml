@@ -20,7 +20,13 @@ aria2:
   max_concurrent: 3
   # Seed ratio limit (0 = unlimited)
   seed_ratio: 2.0
-  # Bind to VPN interface (set to your utun interface)
+  # Interface every aria2 socket binds to — peers, trackers and DHT.
+  #   ""       auto-detect the tunnel carrying traffic (recommended)
+  #   "utun4"  pin one by hand; aria2 refuses to start if it is missing
+  #   "none"   no binding at all, traffic follows the default route
+  # Empty with vpn.enabled means trrnt will not start aria2 at all unless a
+  # real tunnel is up, since binding is the only thing that actually keeps
+  # BitTorrent inside the VPN — the connectivity check just samples a moment.
   bt_interface: ""
   # aria2 event backend: "" (aria2 default, kqueue on macOS), "poll", or "select".
   # Set this to "poll" if aria2c ever pins a CPU core while sitting idle.

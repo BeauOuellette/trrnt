@@ -132,6 +132,7 @@ class Aria2Daemon:
         *,
         state_dir: Path | str = STATE_DIR,
         startup_timeout: float = STARTUP_TIMEOUT,
+        bind_interface: str = "",
     ):
         cfg = aria2_config or {}
         self.rpc_url = cfg.get("rpc_url") or "http://localhost:6800/jsonrpc"
@@ -141,6 +142,10 @@ class Aria2Daemon:
         # (kqueue on macOS); set aria2.event_poll to "poll" or "select" in
         # config.yaml if a spinning daemon ever comes back.
         self.event_poll = cfg.get("event_poll", "") or ""
+        # Interface every aria2 socket is bound to. Set by the caller after it
+        # has resolved which tunnel is actually carrying traffic; empty means
+        # unbound, which the caller only allows with VPN enforcement off.
+        self.bind_interface = bind_interface or ""
 
         self._state_dir = Path(state_dir)
         self._pidfile = self._state_dir / "aria2.pid"
@@ -198,6 +203,19 @@ class Aria2Daemon:
             return "version" in (self._rpc("getVersion", timeout=timeout) or {})
         except Exception:
             return False
+
+    def bound_interface(self) -> str:
+        """The interface the *running* daemon has its sockets bound to.
+
+        Asked of aria2 rather than inferred from what we passed, because the
+        daemon may have been started by someone else or left over from a run
+        when a different tunnel was up. aria2 omits the key entirely when
+        unbound, which reads as "" here.
+        """
+        try:
+            return (self._rpc("getGlobalOption") or {}).get("interface", "") or ""
+        except Exception:
+            return ""
 
     def queue_is_empty(self) -> bool:
         """True if the daemon has nothing active or waiting.
@@ -312,6 +330,14 @@ class Aria2Daemon:
             "--auto-save-interval=60",
             *_DOWNLOAD_FLAGS,
         ]
+
+        if self.bind_interface:
+            # Bind every socket — peers, trackers, DHT — to the tunnel. A
+            # per-download `interface` option would leave DHT and tracker
+            # announces on the default route, which is where the identifying
+            # traffic is. aria2 refuses to start if the interface is gone,
+            # which is the failure mode we want.
+            args.append(f"--interface={self.bind_interface}")
 
         # Resume whatever the previous run left queued.
         if self._session_file.exists():

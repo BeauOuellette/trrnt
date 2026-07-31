@@ -1,6 +1,10 @@
-"""Destination resolution when the media drive isn't connected."""
+"""Destination resolution when the media drive isn't connected.
 
-import sys
+These tests must never depend on what is actually mounted on the machine
+running them, so every "external volume" lives under a temp directory that
+stands in for /Volumes.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -33,14 +37,39 @@ class FakeConfig:
         return obj
 
 
+@pytest.fixture(autouse=True)
+def darwin_mount_parents(monkeypatch):
+    """Pin the /Volumes layout so path parsing means the same thing anywhere."""
+    monkeypatch.setattr(storage, "_MOUNT_PARENTS", ("/Volumes",))
+
+
 @pytest.fixture
-def config(tmp_path):
+def volumes(monkeypatch, tmp_path):
+    """A mount-point root with nothing mounted under it.
+
+    Using the real /Volumes here would make these tests pass or fail based on
+    whether a drive happened to be plugged in.
+    """
+    root = tmp_path / "Volumes"
+    root.mkdir()
+    monkeypatch.setattr(storage, "_MOUNT_PARENTS", (str(root),))
+    return root
+
+
+@pytest.fixture
+def offline_drive(volumes):
+    """Path to a drive that is not mounted — the folder does not exist."""
+    return volumes / "Media HDD"
+
+
+@pytest.fixture
+def config(tmp_path, offline_drive):
     """Mirrors the real config: media on an external drive, other local."""
     return FakeConfig(
         {
             "categories": {
-                "movies": {"path": "/Volumes/Media HDD/Media/Movies"},
-                "audiobooks": {"path": "/Volumes/Media HDD/Media/Audiobooks"},
+                "movies": {"path": str(offline_drive / "Media" / "Movies")},
+                "audiobooks": {"path": str(offline_drive / "Media" / "Audiobooks")},
                 "other": {"path": str(tmp_path / "torrents")},
             },
             "destinations": {
@@ -50,12 +79,6 @@ def config(tmp_path):
             },
         }
     )
-
-
-@pytest.fixture(autouse=True)
-def darwin_mount_parents(monkeypatch):
-    """Pin the /Volumes layout so these tests mean the same thing anywhere."""
-    monkeypatch.setattr(storage, "_MOUNT_PARENTS", ("/Volumes",))
 
 
 # ── volume_root ───────────────────────────────────────────────────────────────
@@ -84,25 +107,23 @@ def test_local_path_is_always_available(tmp_path):
     assert is_available(tmp_path / "not" / "yet" / "created")
 
 
-def test_unplugged_drive_is_unavailable():
-    assert not is_available("/Volumes/Definitely Not Mounted/Media")
+def test_unplugged_drive_is_unavailable(offline_drive):
+    assert not is_available(offline_drive / "Media")
 
 
-def test_stale_folder_left_by_an_unplugged_drive_is_unavailable(monkeypatch, tmp_path):
+def test_stale_folder_left_by_an_unplugged_drive_is_unavailable(volumes):
     """The empty /Volumes/<name> shell must not absorb downloads."""
-    stale = tmp_path / "Volumes" / "Media HDD"
-    stale.mkdir(parents=True)
-    monkeypatch.setattr(storage, "_MOUNT_PARENTS", (str(tmp_path / "Volumes"),))
+    stale = volumes / "Media HDD"
+    stale.mkdir()
 
     assert not is_available(stale / "Media" / "Movies")
     # ...unless the operator has explicitly opted out of the check.
     assert is_available(stale / "Media" / "Movies", require_mount=False)
 
 
-def test_real_mount_point_is_available(monkeypatch, tmp_path):
-    mounted = tmp_path / "Volumes" / "Media HDD"
-    mounted.mkdir(parents=True)
-    monkeypatch.setattr(storage, "_MOUNT_PARENTS", (str(tmp_path / "Volumes"),))
+def test_real_mount_point_is_available(monkeypatch, volumes):
+    mounted = volumes / "Media HDD"
+    mounted.mkdir()
     monkeypatch.setattr(storage.os.path, "ismount", lambda p: Path(p) == mounted)
 
     assert is_available(mounted / "Media" / "Movies")
@@ -110,29 +131,31 @@ def test_real_mount_point_is_available(monkeypatch, tmp_path):
 
 # ── resolve_destination ───────────────────────────────────────────────────────
 
-def test_connected_drive_is_used_as_configured(config, monkeypatch):
+def test_connected_drive_is_used_as_configured(config, monkeypatch, offline_drive):
     monkeypatch.setattr(storage, "is_available", lambda *a, **k: True)
 
     dest = resolve_destination(config, "movies")
 
-    assert dest.path == "/Volumes/Media HDD/Media/Movies"
+    assert dest.path == str(offline_drive / "Media" / "Movies")
     assert not dest.redirected
     assert dest.notice == ""
 
 
-def test_offline_drive_falls_back_locally_under_the_category(config, tmp_path):
+def test_offline_drive_falls_back_locally_under_the_category(
+    config, tmp_path, offline_drive
+):
     dest = resolve_destination(config, "movies")
 
     assert dest.path == str(tmp_path / "torrents" / "movies")
     assert dest.redirected
-    assert dest.configured == "/Volumes/Media HDD/Media/Movies"
+    assert dest.configured == str(offline_drive / "Media" / "Movies")
 
 
 def test_fallback_notice_names_the_missing_drive(config):
     assert resolve_destination(config, "movies").notice.startswith("Media HDD offline →")
 
 
-def test_each_category_gets_its_own_fallback_subdirectory(config, tmp_path):
+def test_each_category_gets_its_own_fallback_subdirectory(config):
     assert resolve_destination(config, "movies").path.endswith("/movies")
     assert resolve_destination(config, "audiobooks").path.endswith("/audiobooks")
 
@@ -155,18 +178,18 @@ def test_abort_policy_refuses_instead_of_redirecting(config):
         resolve_destination(config, "movies")
 
 
-def test_a_fallback_on_a_missing_drive_degrades_to_the_default(config):
-    config._data["destinations"]["fallback_path"] = "/Volumes/Also Missing/dump"
+def test_a_fallback_on_a_missing_drive_degrades_to_the_default(config, volumes):
+    config._data["destinations"]["fallback_path"] = str(volumes / "Also Missing" / "dump")
 
     dest = resolve_destination(config, "movies")
 
     assert dest.path == str(Path(storage.DEFAULT_FALLBACK).expanduser() / "movies")
 
 
-def test_defaults_apply_when_the_destinations_block_is_absent(tmp_path):
+def test_defaults_apply_when_the_destinations_block_is_absent(offline_drive):
     """Existing configs written before this feature keep working."""
     config = FakeConfig(
-        {"categories": {"movies": {"path": "/Volumes/Media HDD/Media/Movies"}}}
+        {"categories": {"movies": {"path": str(offline_drive / "Media" / "Movies")}}}
     )
 
     dest = resolve_destination(config, "movies")
@@ -175,18 +198,17 @@ def test_defaults_apply_when_the_destinations_block_is_absent(tmp_path):
     assert dest.path == str(Path(storage.DEFAULT_FALLBACK).expanduser() / "movies")
 
 
-def test_require_mount_can_be_disabled(config, monkeypatch, tmp_path):
+def test_require_mount_can_be_disabled(config, volumes):
     """Opting out lets a stale folder be used, for anyone who wants that."""
-    stale = tmp_path / "Volumes" / "Media HDD"
-    (stale / "Media" / "Movies").mkdir(parents=True)
-    monkeypatch.setattr(storage, "_MOUNT_PARENTS", (str(tmp_path / "Volumes"),))
-    config._data["categories"]["movies"]["path"] = str(stale / "Media" / "Movies")
+    stale = volumes / "Media HDD" / "Media" / "Movies"
+    stale.mkdir(parents=True)
+    config._data["categories"]["movies"]["path"] = str(stale)
     config._data["destinations"]["require_mount"] = False
 
     dest = resolve_destination(config, "movies")
 
     assert not dest.redirected
-    assert dest.path == str(stale / "Media" / "Movies")
+    assert dest.path == str(stale)
 
 
 def test_category_without_a_path_uses_the_supplied_default(config, tmp_path):

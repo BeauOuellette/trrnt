@@ -61,6 +61,45 @@ def _print_splash():
     console.print("  [dim]terminal torrent aggregator[/]\n")
 
 
+# Sentinel: VPN enforcement is on but no tunnel is carrying traffic.
+_NO_TUNNEL = object()
+
+
+def _resolve_bt_interface(config: Config):
+    """Which interface aria2 should bind every socket to.
+
+    Returns the interface name, "" for deliberately unbound, or _NO_TUNNEL
+    when enforcement is on and there is nothing safe to bind to.
+
+    Binding is what actually keeps BitTorrent traffic inside the tunnel. The
+    VPN check alone only says a tunnel exists at that instant — it cannot stop
+    aria2 from using the physical interface, and peers see the address the
+    socket is bound to.
+    """
+    from .vpn import VPNGuard
+
+    configured = (config.get("aria2", "bt_interface") or "").strip()
+    if configured.lower() == "none":
+        return ""  # explicit opt-out
+    if configured:
+        return configured  # pinned by hand
+
+    if not config.get("vpn", "enabled", default=True):
+        return ""
+
+    interface = VPNGuard(config.get("vpn")).find_vpn_interface()
+    if interface:
+        return interface
+
+    console.print(
+        "[bold red]✗ No VPN tunnel is carrying traffic[/] — aria2 not started.\n"
+        "  Binding it now would send BitTorrent over your ISP connection.\n"
+        "  Connect the VPN and relaunch, or set [bold]aria2.bt_interface: "
+        '"none"[/] to override.'
+    )
+    return _NO_TUNNEL
+
+
 def _ensure_services(config: Config):
     """Start aria2 and clamd if not already running.
 
@@ -75,7 +114,11 @@ def _ensure_services(config: Config):
 
     from .daemon import Aria2Daemon
 
-    daemon = Aria2Daemon(config.get("aria2"))
+    bind = _resolve_bt_interface(config)
+    if bind is _NO_TUNNEL:
+        return None  # nothing started; downloads are blocked anyway
+
+    daemon = Aria2Daemon(config.get("aria2"), bind_interface=bind)
     result = daemon.ensure_running()
 
     if result == "adopted":
@@ -91,6 +134,22 @@ def _ensure_services(config: Config):
                       f"{daemon.rpc_port} already in use?")
     elif result == "unavailable":
         console.print("[yellow]aria2 not installed (brew install aria2)[/]")
+
+    # Confirm the binding against the daemon that is actually running, rather
+    # than assuming the flag we passed took effect. An adopted or reclaimed
+    # daemon predates this launch and may be bound to nothing, or to a tunnel
+    # that has since gone away.
+    if bind and result != "unavailable":
+        actual = daemon.bound_interface()
+        if actual == bind:
+            console.print(f"[dim]aria2 bound to[/] [green]{bind}[/]")
+        else:
+            console.print(
+                f"[bold red]⚠ aria2 is NOT bound to {bind}[/]"
+                f"{f' (it reports {actual!r})' if actual else ' — it is unbound'}.\n"
+                "  BitTorrent traffic can leave over your ISP connection.\n"
+                "  Quit any aria2 you started yourself, then relaunch trrnt."
+            )
 
     # Start clamd if not running
     try:
@@ -140,13 +199,15 @@ def cli(ctx, config_path):
             # every exit path — and it is what stops us orphaning aria2c.
             # is_rpc_alive() first: if aria2 already died we can't know what was
             # queued, and shouldn't claim anything was saved.
-            if (daemon.owns_daemon and daemon.is_rpc_alive()
-                    and not daemon.queue_is_empty()):
-                console.print(
-                    "[dim]Stopping aria2 — unfinished downloads are saved "
-                    "and resume next launch.[/]"
-                )
-            daemon.shutdown()
+            # daemon is None when we refused to start it unbound.
+            if daemon is not None:
+                if (daemon.owns_daemon and daemon.is_rpc_alive()
+                        and not daemon.queue_is_empty()):
+                    console.print(
+                        "[dim]Stopping aria2 — unfinished downloads are saved "
+                        "and resume next launch.[/]"
+                    )
+                daemon.shutdown()
 
 
 # ─── Search ───────────────────────────────────────────────────────────────────
