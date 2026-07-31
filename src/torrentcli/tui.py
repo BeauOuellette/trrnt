@@ -286,6 +286,20 @@ class InspectScreen(ModalScreen[str]):
         self.dismiss("open")
 
 
+# Ctrl+letter combinations a terminal physically cannot deliver: these bytes
+# ARE the control codes for other keys, so the app is handed Tab or Backspace
+# and the binding never fires — no error, no clue, the key just does nothing.
+# Textual explicitly clears IXON/IXOFF, so ctrl+s and ctrl+q are fine despite
+# being XON/XOFF; termios cannot rescue the ones below, because there is
+# nothing to distinguish.
+UNDELIVERABLE_KEYS = {
+    "ctrl+h": "backspace",
+    "ctrl+i": "tab",
+    "ctrl+j": "enter (line feed)",
+    "ctrl+m": "enter (carriage return)",
+    "ctrl+[": "escape",
+}
+
 # Footer contents, in the order they appear. Actions rather than keys, so
 # rebinding a key moves the label with it.
 _FOOTER_LEFT = ["download_selected", "clear_finished", "remove_download", "quit"]
@@ -478,8 +492,10 @@ class TGetApp(App):
         Binding("ctrl+a", "select_all", "Select All", priority=True, show=False),
         Binding("ctrl+p", "pause_all", "Pause All", priority=True, show=False),
         Binding("ctrl+f", "refresh_downloads", "Refresh", priority=True, show=False),
-        Binding("ctrl+i", "inspect_result", "Inspect", priority=True, show=False),
-        Binding("ctrl+h", "inspect_download", "Health", priority=True, show=False),
+        # Was ctrl+i and ctrl+h. Both were undeliverable — the terminal sends
+        # Tab and Backspace for those bytes — so neither key had ever worked.
+        Binding("ctrl+e", "inspect_result", "Inspect", priority=True, show=False),
+        Binding("ctrl+g", "inspect_download", "Health", priority=True, show=False),
     ]
 
     def __init__(self, config: Config):

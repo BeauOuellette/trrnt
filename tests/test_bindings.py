@@ -1,0 +1,139 @@
+"""Every binding must be pressable, reachable, and actually do something.
+
+Two bindings shipped that could never fire: ctrl+i and ctrl+h are the ASCII
+codes for Tab and Backspace, so the terminal hands the app those keys instead
+and the action is never reached. Nothing errors — the key simply does nothing,
+which is exactly how it went unnoticed.
+"""
+
+import asyncio
+
+import pytest
+
+from torrentcli.tui import (
+    UNDELIVERABLE_KEYS,
+    InspectScreen,
+    KeysScreen,
+    TGetApp,
+)
+
+from test_downloads_table import _app, _result
+
+
+ALL_SCREENS = [TGetApp, InspectScreen, KeysScreen]
+
+
+# ── pressable ─────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("owner", ALL_SCREENS, ids=lambda c: c.__name__)
+def test_no_binding_uses_a_key_the_terminal_cannot_deliver(owner):
+    for binding in owner.BINDINGS:
+        collision = UNDELIVERABLE_KEYS.get(binding.key)
+        assert collision is None, (
+            f"{owner.__name__}: {binding.key} ({binding.description}) can never "
+            f"fire — the terminal sends {collision} for those bytes"
+        )
+
+
+def test_bindings_do_not_collide_with_each_other():
+    seen = {}
+    for b in TGetApp.BINDINGS:
+        assert b.key not in seen, (
+            f"{b.key} is bound to both {seen.get(b.key)} and {b.description}")
+        seen[b.key] = b.description
+
+
+# ── wired ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("owner", ALL_SCREENS, ids=lambda c: c.__name__)
+def test_every_binding_has_the_action_it_names(owner):
+    for binding in owner.BINDINGS:
+        assert hasattr(owner, f"action_{binding.action}"), (
+            f"{owner.__name__}: {binding.key} calls action_{binding.action}, "
+            f"which does not exist")
+
+
+# ── actually fires ────────────────────────────────────────────────────────────
+
+def _press(key, action, focus):
+    """Press a key with `focus` focused; report whether its action ran."""
+    async def go():
+        app = _app()
+        fired = []
+        async with app.run_test(size=(102, 30)) as pilot:
+            app.search_results = [_result("Some Release 1080p x265-GRP")]
+            app._render_results()
+            await app._update_downloads()
+            setattr(app, f"action_{action}", lambda *a, **k: fired.append(action))
+            try:
+                app.query_one(focus).focus()
+            except Exception:
+                pass
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+        return bool(fired)
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize(
+    "key,action",
+    [(b.key, b.action) for b in TGetApp.BINDINGS],
+    ids=[b.description.replace(" ", "-") for b in TGetApp.BINDINGS],
+)
+@pytest.mark.parametrize("focus", ["#results-table", "#search-input"])
+def test_binding_fires_from_either_pane(key, action, focus):
+    """A binding shadowed by the focused widget is as dead as an unbound one —
+    an Input eats most plain keys, which is why these are priority bindings."""
+    assert _press(key, action, focus), (
+        f"{key} did not reach action_{action} with {focus} focused")
+
+
+# ── observable ────────────────────────────────────────────────────────────────
+
+def _effect(key, check, focus="#results-table"):
+    async def go():
+        app = _app()
+        async with app.run_test(size=(102, 30)) as pilot:
+            app.search_results = [_result("Some Release 1080p x265-GRP")]
+            app._render_results()
+            await app._update_downloads()
+            try:
+                app.query_one(focus).focus()
+            except Exception:
+                pass
+            await pilot.pause()
+            await pilot.press(key)
+            for _ in range(3):
+                await pilot.pause()
+            return check(app)
+    return asyncio.run(go())
+
+
+def _stack(app):
+    return [type(s).__name__ for s in app.screen_stack]
+
+
+def test_inspect_opens_the_detail_modal():
+    """The binding the user reported dead. It was, but only in a terminal."""
+    assert "InspectScreen" in _effect("ctrl+e", _stack)
+
+
+def test_keys_opens_the_overlay():
+    assert "KeysScreen" in _effect("ctrl+k", _stack)
+
+
+def test_select_all_marks_every_row():
+    assert _effect("ctrl+a", lambda a: sorted(a.selected_indices)) == [0]
+
+
+def test_search_moves_focus_to_the_input():
+    assert _effect("ctrl+s", lambda a: a.focused.id) == "search-input"
+
+
+def test_health_reports_through_notifications():
+    """It writes one line to the info bar but notifies for every download, so
+    the output survives a bar only tall enough for one line."""
+    def check(app):
+        return len(app._notifications) > 0
+    assert _effect("ctrl+g", check)
