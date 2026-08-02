@@ -88,6 +88,8 @@ SEED_GOOD = "#5fd7af"   # a seeder is connected
 SEED_WARN = "#d7af5f"   # peers, but all partial
 SEED_NONE = "#ff5f87"   # nothing on the line
 DIM = "#808080"         # 244
+RULE = "#5f5f87"        # 60 — column rules, the theme's own selection violet
+TRACK = "#3a3a3a"       # 237 — the unfilled half of a progress bar
 
 # Shown when a finished download is re-filed by its contents.
 _CATEGORY_ICONS = {"audiobooks": "🎧", "comics": "💥", "ebooks": "📚"}
@@ -100,15 +102,105 @@ _STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peer
 # Everything in the results row that isn't the name: marker, index, size,
 # seeders, leechers, source, plus DataTable's cell padding. Name gets the rest.
 _RESULT_CHROME = 54
-# Same for the downloads row, in its narrow form (no Status column).
-_DOWNLOAD_CHROME = 72
 # Below this the Status column is dropped; the progress bar and Seeds colour
 # already carry that information.
 _WIDE = 140
+
+# ── Downloads table geometry ─────────────────────────────────────────────────
+# Rows are three lines so their text sits centred with a blank line above and
+# below. Six rows plus the header is the height the section always occupies —
+# fixed, not grown, so the layout never shifts as downloads come and go.
+_DOWNLOAD_ROW_LINES = 3
+_DOWNLOAD_ROWS_VISIBLE = 6
+_DOWNLOAD_TABLE_HEIGHT = 1 + _DOWNLOAD_ROWS_VISIBLE * _DOWNLOAD_ROW_LINES
+
+# Column widths are pinned rather than sized to content: a torrent arriving
+# with "23/102" seeders would otherwise widen that column and shift every rule
+# on screen. Name takes whatever is left.
+# Sized to each formatter's widest real output, not its typical one: Speed and
+# Size both roll over at 1023.9 ("1023.9 KB/s"), and a column narrower than its
+# content silently eats the padding that separates it from the rule.
+_DOWNLOAD_COL_WIDTHS = {"Size": 9, "Seeds": 8, "Speed": 11, "ETA": 9, "Status": 8}
+# Cells carry their own single space either side, so cell_padding is 0 on this
+# table and each rule costs one column instead of three. That is 10 columns of
+# Name width back, which is the difference between the name fitting and not.
+_DOWNLOAD_CELL_PAD = " "
+# The table's one column of inset either side. Measured, not guessed: a
+# vertical scrollbar appears as soon as the queue outgrows six rows, but
+# Textual has already taken it out of the widget's own width by then.
+_DOWNLOAD_GUTTER = 2
+# Rows the user cannot act on, padding the fixed height so the rules run all
+# the way down instead of stopping at the last real download.
+_GHOST_PREFIX = "__ghost_"
+
+# The progress bar is the one pinned column that can afford to give: below
+# roughly 100 columns there is no width for both a full bar and a readable
+# name, and the name is what tells two downloads apart.
+_PROGRESS_BAR = 20
+_PROGRESS_BAR_MIN = 10
+_PROGRESS_TEXT = 7      # " 100.0%"
+# "The Accountant 2 (2025)" is 23 — a title and its year is the shape the name
+# column exists to show, so the bar gives way until that much fits.
+_NAME_MIN = 24
+
+
+def _download_chrome(wide: bool, bar: int = _PROGRESS_BAR) -> int:
+    """Width the downloads row spends on everything except the Name."""
+    widths = dict(_DOWNLOAD_COL_WIDTHS, Progress=bar + _PROGRESS_TEXT)
+    columns = ["Size", "Progress", "Seeds", "Speed", "ETA"]
+    if wide:
+        columns.append("Status")
+    pad = 2 * len(_DOWNLOAD_CELL_PAD)
+    rules = len(columns)  # one before each column that follows Name
+    return (sum(widths[c] + pad for c in columns) + rules + pad
+            + _DOWNLOAD_GUTTER)
+
+
+def download_layout(width: int, wide: bool) -> tuple[int, int]:
+    """(Name budget, progress bar width) for a terminal `width` columns wide.
+
+    The bar shrinks only once a full-width one would squeeze the name below
+    what is worth reading, and never past _PROGRESS_BAR_MIN — a two-character
+    bar would be decoration, not information.
+    """
+    for bar in range(_PROGRESS_BAR, _PROGRESS_BAR_MIN - 1, -1):
+        budget = width - _download_chrome(wide, bar)
+        if budget >= _NAME_MIN or bar == _PROGRESS_BAR_MIN:
+            # Floor of 6, not of a comfortable width: on a window too narrow
+            # for the row, clamping the name up is what pushes the table into
+            # scrolling sideways, which is worse than a stubby name.
+            return max(6, min(60, budget)), bar
+    return _NAME_MIN, _PROGRESS_BAR_MIN
 # Indexer names are long ("The Pirate Bay") and low-value once you know which
 # indexers you run. Capping it is what buys the Name column its width back —
 # and stops the row spilling past the right edge into a scrollbar.
 SOURCE_MAX = 12
+
+
+def centre_cell(lines: list, height: int = _DOWNLOAD_ROW_LINES,
+                pad: str = _DOWNLOAD_CELL_PAD) -> Text:
+    """One cell's content, centred vertically in a row `height` lines tall.
+
+    The horizontal padding goes on each line rather than around the finished
+    cell: the centring prepends blank lines, so padding the cell as a whole
+    would put the space on a blank line and leave the text flush against the
+    rule.
+    """
+    out = Text()
+    for _ in range(max(0, (height - len(lines)) // 2)):
+        out.append("\n")
+    for i, line in enumerate(lines):
+        if i:
+            out.append("\n")
+        out.append(pad)
+        out.append_text(line if isinstance(line, Text) else Text(str(line)))
+        out.append(pad)
+    return out
+
+
+def rule_cell(height: int = _DOWNLOAD_ROW_LINES) -> Text:
+    """A column rule, drawn down every line of a row."""
+    return Text("\n".join("│" for _ in range(height)), style=RULE)
 
 
 def fit_name(name: str, budget: int) -> str:
@@ -1871,8 +1963,12 @@ class TGetApp(App):
         overflow-x: hidden;
     }
     #downloads-table {
-        height: auto;
-        max-height: 10;
+        /* Fixed, so the layout never shifts as downloads come and go. The
+           percentage is the small-terminal escape hatch: on a short window
+           the section gives way rather than crowding out the results. Set so
+           the full six rows still survive an ordinary 40-line terminal. */
+        height: 19;
+        max-height: 60%;
         margin: 0 1 1 1;
         overflow-x: hidden;
     }
@@ -1960,6 +2056,8 @@ class TGetApp(App):
         self._scanned_gids: set[str] = set()  # Track downloads already scanned
         self._routed_gids: set[str] = set()  # Destination corrected in flight
         self._downloads_wide: bool | None = None  # Status column shown?
+        self._downloads_budget: int | None = None  # pinned Name column width
+        self._progress_bar = _PROGRESS_BAR         # shrinks on narrow windows
         self._stall_tracker: dict[str, int] = {}  # gid -> consecutive stall checks
         self._refresh_tick = 0  # paces the orphan-record sweep
         # Which indexers we last warned about, so a permanently broken one
@@ -2233,8 +2331,9 @@ class TGetApp(App):
                 speed /= 1024
             status_bar.refresh()
 
-            for dl in active + waiting:
-                progress_bar = self._make_progress(dl.progress)
+            budget = self.download_name_budget()
+            queued = active + waiting
+            for dl in queued:
                 status_color = {
                     "active": "green",
                     "waiting": "yellow",
@@ -2242,20 +2341,55 @@ class TGetApp(App):
                     "error": "red",
                 }.get(dl.status, "white")
 
-                budget = max(8, min(60, self.size.width - _DOWNLOAD_CHROME))
                 cells = [
-                    fit_name(self.download_display_name(dl), budget),
-                    dl.size_human,
-                    progress_bar,
-                    _peer_cell(dl),
-                    dl.speed_human if dl.status == "active" else "—",
-                    dl.eta if dl.status == "active" else "—",
+                    [fit_name(self.download_display_name(dl), budget)],
+                    [dl.size_human],
+                    [self._make_progress(dl.progress)],
+                    [_peer_cell(dl)],
+                    [dl.speed_human if dl.status == "active" else "—"],
+                    [dl.eta if dl.status == "active" else "—"],
                 ]
                 if self._downloads_wide:
-                    cells.append(Text(dl.status, style=status_color))
-                table.add_row(*cells, key=dl.gid)
+                    cells.append([Text(dl.status, style=status_color)])
+                table.add_row(
+                    *self._ruled(cells), key=dl.gid, height=_DOWNLOAD_ROW_LINES
+                )
+
+            # Pad the fixed height so the rules reach the bottom. Without
+            # these the grid stops at the last download and the reserved
+            # space below reads as a rendering fault rather than as room.
+            blank = [[""] for _ in cells] if queued else [
+                [""] for _ in range(7 if self._downloads_wide else 6)
+            ]
+            for i in range(max(0, _DOWNLOAD_ROWS_VISIBLE - len(queued))):
+                table.add_row(
+                    *self._ruled(blank),
+                    key=f"{_GHOST_PREFIX}{i}",
+                    height=_DOWNLOAD_ROW_LINES,
+                )
         except Exception:
             pass  # aria2 might not be running yet
+
+    def download_name_budget(self) -> int:
+        """Width left for the Name column, as the columns were actually built.
+
+        Read back rather than recomputed: the Name column's width is pinned,
+        so a row fitted to a different number would be padded or clipped by
+        the table instead of by fit_name.
+        """
+        if self._downloads_budget is not None:
+            return self._downloads_budget
+        return download_layout(self.size.width, bool(self._downloads_wide))[0]
+
+    @staticmethod
+    def _ruled(cells: list[list]) -> list:
+        """Interleave column rules between a row's cells, centring each."""
+        out = []
+        for i, lines in enumerate(cells):
+            if i:
+                out.append(rule_cell())
+            out.append(centre_cell(lines))
+        return out
 
     async def _announce_category(self, dl: DownloadStatus) -> None:
         """Say where a running download will end up, once its files are known.
@@ -2495,11 +2629,14 @@ class TGetApp(App):
         )
 
     def _make_progress(self, percent: float) -> Text:
-        """Create a text-based progress bar."""
-        width = 20
+        """A text progress bar in the theme's violet, on a recessive track."""
+        width = self._progress_bar
         filled = int(width * percent / 100)
-        bar = "█" * filled + "░" * (width - filled)
-        return Text(f"{bar} {percent:.1f}%")
+        bar = Text()
+        bar.append("█" * filled, style=ACCENT)
+        bar.append("░" * (width - filled), style=TRACK)
+        bar.append(f" {percent:5.1f}%")
+        return bar
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle search submission.
@@ -2561,21 +2698,39 @@ class TGetApp(App):
         info.update(status)
 
     def _sync_download_columns(self) -> DataTable:
-        """Add or drop the Status column as the window crosses _WIDE.
+        """Rebuild the columns when the window crosses _WIDE, or on first use.
 
         Status is the first thing to go on a narrow window: the progress bar
         and the Seeds colour already say whether a download is moving.
+
+        Rebuilt rather than adjusted because the Name width is pinned too, and
+        it is the one column whose width tracks the terminal.
         """
         table = self.query_one("#downloads-table", DataTable)
         wide = self.size.width >= _WIDE
-        if wide == self._downloads_wide and table.columns:
+        budget, bar = download_layout(self.size.width, wide)
+        if (wide == self._downloads_wide and table.columns
+                and (budget, bar) == (self._downloads_budget, self._progress_bar)):
             return table
         self._downloads_wide = wide
+        self._downloads_budget = budget
+        self._progress_bar = bar
         table.clear(columns=True)
+        # Cells bring their own padding so a rule costs one column, not three.
+        table.cell_padding = 0
+        widths = dict(_DOWNLOAD_COL_WIDTHS, Name=budget,
+                      Progress=bar + _PROGRESS_TEXT)
         columns = ["Name", "Size", "Progress", "Seeds", "Speed", "ETA"]
         if wide:
             columns.append("Status")
-        table.add_columns(*columns)
+        pad = 2 * len(_DOWNLOAD_CELL_PAD)
+        for i, name in enumerate(columns):
+            if i:
+                table.add_column(Text("│", style=RULE), width=1)
+            table.add_column(
+                Text(f"{_DOWNLOAD_CELL_PAD}{name}{_DOWNLOAD_CELL_PAD}"),
+                width=widths[name] + pad,
+            )
         return table
 
     def name_budget(self) -> int:
@@ -2931,6 +3086,10 @@ class TGetApp(App):
             try:
                 row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
                 gid = row_key.value
+                # The cursor can sit on one of the blank rows that pad the
+                # table to its fixed height. Those are spacing, not downloads.
+                if gid and gid.startswith(_GHOST_PREFIX):
+                    gid = None
             except Exception:
                 pass
 

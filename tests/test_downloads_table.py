@@ -15,10 +15,12 @@ from torrentcli.download import DownloadStatus
 from torrentcli.organize import OrganizeRecord, OrganizeStore
 from torrentcli.search import TorrentResult
 from torrentcli.tui import (
+    ACCENT,
     _FOOTER_LEFT,
     _FOOTER_RIGHT,
     SOURCE_MAX,
     TGetApp,
+    download_layout,
     fit_name,
     fit_source,
 )
@@ -140,34 +142,158 @@ def test_two_near_identical_releases_stay_distinguishable():
 
 # ── downloads table ───────────────────────────────────────────────────────────
 
+def _is_rule(text: str) -> bool:
+    """A rule cell is the bar repeated down every line of the row."""
+    return bool(text) and set(text.replace("\n", "")) == {"│"}
+
+
+def _data_cols(table) -> list[str]:
+    """Column labels with the rules and the cell padding taken back off."""
+    labels = [str(c.label) for c in table.columns.values()]
+    return [label.strip() for label in labels if not _is_rule(label.strip())]
+
+
+def _data_row(table, index: int) -> list[str]:
+    """Row cells, minus the rules, flattened out of the vertical centring."""
+    return [str(c).strip() for c in table.get_row_at(index)
+            if not _is_rule(str(c))]
+
+
+def _real_rows(table) -> int:
+    """Rows backed by a download, ignoring the blank height padding."""
+    return sum(1 for key in table.rows
+               if not str(key.value).startswith("__ghost_"))
+
+
 def test_narrow_window_drops_the_status_column():
     async def body(app):
         await app._update_downloads()
         t = app.query_one("#downloads-table")
-        return [str(c.label) for c in t.columns.values()], t.row_count
-    cols, rows = _run((102, 40), body)
+        return _data_cols(t), _real_rows(t), t.row_count
+    cols, real, total = _run((102, 40), body)
     assert "Status" not in cols
     assert cols == ["Name", "Size", "Progress", "Seeds", "Speed", "ETA"]
-    assert rows == 1, "row was dropped — column count and row width disagree"
+    assert real == 1, "row was dropped — column count and row width disagree"
+    assert total == 6, "the fixed height should be padded out to six rows"
 
 
 def test_wide_window_keeps_the_status_column():
     async def body(app):
         await app._update_downloads()
         t = app.query_one("#downloads-table")
-        return [str(c.label) for c in t.columns.values()], t.row_count
-    cols, rows = _run((206, 40), body)
+        return _data_cols(t), _real_rows(t)
+    cols, real = _run((206, 40), body)
     assert cols[-1] == "Status"
-    assert rows == 1
+    assert real == 1
 
 
 def test_the_seeds_column_reaches_the_rendered_row():
     async def body(app):
         await app._update_downloads()
         t = app.query_one("#downloads-table")
-        return [str(c) for c in t.get_row_at(0)]
+        return _data_row(t, 0)
     row = _run((102, 40), body)
     assert row[3] == "9/12"
+
+
+# ── fixed height, rules and the violet bar ────────────────────────────────────
+
+def test_rules_sit_between_every_pair_of_columns():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        labels = [str(c.label).strip() for c in t.columns.values()]
+        return labels
+    labels = _run((102, 40), body)
+    # Name │ Size │ Progress │ Seeds │ Speed │ ETA
+    assert labels == ["Name", "│", "Size", "│", "Progress", "│", "Seeds",
+                      "│", "Speed", "│", "ETA"]
+
+
+def test_short_queue_is_padded_so_the_rules_reach_the_bottom():
+    """Without the padding the grid stops at the last download and the space
+    below it reads as a rendering fault rather than as room."""
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        ghosts = [k for k in t.rows if str(k.value).startswith("__ghost_")]
+        return t.row_count, len(ghosts)
+    total, ghosts = _run((102, 40), body)
+    assert total == 6
+    assert ghosts == 5, "one real download plus five blanks"
+
+
+def test_a_full_queue_gets_no_padding():
+    async def body(app):
+        app.aria2 = FakeAria2([
+            DownloadStatus(gid=f"g{i}", status="active", name=f"Download {i}",
+                           total_bytes=1_000_000, completed_bytes=500_000,
+                           download_speed=1024, seeders=9, connections=12)
+            for i in range(9)
+        ])
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return t.row_count, sum(1 for k in t.rows
+                                if str(k.value).startswith("__ghost_"))
+    total, ghosts = _run((102, 40), body)
+    assert total == 9, "all nine rows exist; the table scrolls past six"
+    assert ghosts == 0
+
+
+def test_rows_are_three_lines_so_the_text_can_centre():
+    async def body(app):
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return t.get_row_height(list(t.rows)[0]), str(t.get_row_at(0)[0])
+    height, name = _run((102, 40), body)
+    assert height == 3
+    assert name.startswith("\n"), "text should sit on the middle line"
+
+
+def test_progress_bar_wears_the_theme_violet():
+    async def body(app):
+        await app._update_downloads()
+        return app.query_one("#downloads-table").get_row_at(0)[4]
+    cell = _run((102, 40), body)
+    styles = {str(span.style) for span in cell.spans}
+    assert ACCENT in styles, f"no violet in the bar: {styles}"
+
+
+def test_the_progress_bar_gives_way_before_the_name_does():
+    """A full-width bar and a readable name do not both fit below ~110 cols."""
+    wide_budget, wide_bar = download_layout(140, wide=True)
+    mid_budget, mid_bar = download_layout(100, wide=False)
+    tight_budget, tight_bar = download_layout(80, wide=False)
+
+    assert wide_bar == 20, "a wide window should keep the full bar"
+    assert mid_bar < wide_bar, "the bar should shrink to protect the name"
+    assert mid_budget >= len("The Accountant 2 (2025)"), (
+        "a title and its year is the shape the name column exists to show")
+    assert tight_bar == 10, "the bar stops shrinking at its floor"
+    assert tight_budget >= 6
+
+
+@pytest.mark.parametrize("width", [80, 90, 100, 102, 120, 140, 206])
+def test_a_scrolling_queue_never_scrolls_sideways(width):
+    """Nine downloads outgrow the six visible rows, so the vertical scrollbar
+    appears. The row still has to fit the width that leaves."""
+    async def body(app):
+        app.aria2 = FakeAria2([
+            DownloadStatus(gid=f"g{i}", status="active",
+                           name=f"Some Fairly Long Release Name {i} 2160p",
+                           total_bytes=10**10, completed_bytes=5 * 10**9,
+                           download_speed=1024 * 1023, seeders=99,
+                           connections=100)
+            for i in range(9)
+        ])
+        await app._update_downloads()
+        t = app.query_one("#downloads-table")
+        return t.virtual_size.width, t.size.width, t.show_horizontal_scrollbar
+
+    virtual, visible, hbar = _run((width, 40), body)
+    assert hbar is False, f"downloads table scrolls sideways at {width} cols"
+    assert virtual <= visible, (
+        f"row is {virtual} wide in a {visible} viewport at {width} cols")
 
 
 def test_every_column_gets_a_value_at_both_widths():
