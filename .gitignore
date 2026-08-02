@@ -13,3 +13,7 @@ build/
 # Claude Code local permission grants — machine-specific, not project config
 .claude/settings.local.json
 .claude/settings_local.json
+
+# Mascot generator and its reference image. Kept locally, not shipped: the
+# baked art in branding.py is what the app actually uses.
+/tools/
