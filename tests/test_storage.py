@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from torrentcli import storage
-from torrentcli.storage import (
+from trrnt import storage
+from trrnt.storage import (
     Destination,
     DestinationUnavailable,
     is_available,

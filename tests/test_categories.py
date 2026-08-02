@@ -3,8 +3,8 @@ download completes by what the files actually are."""
 
 import pytest
 
-from torrentcli.search import _detect_category
-from torrentcli.security import (
+from trrnt.search import _detect_category
+from trrnt.security import (
     detect_category_from_names,
     detect_content_category,
     is_comic_dir,

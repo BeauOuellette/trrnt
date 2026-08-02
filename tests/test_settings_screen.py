@@ -11,11 +11,11 @@ from pathlib import Path
 
 from textual.widgets import Checkbox, Input, RadioSet
 
-from torrentcli.config import Config
-from torrentcli.tui import SettingsScreen, TGetApp, _format_uptime
+from trrnt.config import Config
+from trrnt.tui import SettingsScreen, TGetApp, _format_uptime
 
 
-EXAMPLE = Path(__file__).parent.parent / "src" / "torrentcli" / "config.example.yaml"
+EXAMPLE = Path(__file__).parent.parent / "src" / "trrnt" / "config.example.yaml"
 
 
 class FakeConfig:

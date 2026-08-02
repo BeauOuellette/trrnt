@@ -1,5 +1,5 @@
-# tget configuration
-# Copy to ~/.config/tget/config.yaml and fill in your values
+# trrnt configuration
+# Copy to ~/.config/trrnt/config.yaml and fill in your values
 
 # Jackett settings
 jackett:
@@ -12,6 +12,29 @@ jackett:
   exclude_indexers: []
   # Timeout in seconds
   timeout: 30
+  # Per-indexer ceiling, so one slow tracker can't stall the whole search.
+  # Defaults to `timeout` when unset. 30s is deliberately chosen: a
+  # Cloudflare-gated indexer with a fresh cookie answers in ~14s and makes it,
+  # while one needing a new cookie takes ~39s and gets skipped — with a toast
+  # offering to repair it. Raising this trades a fast first search for fewer
+  # skips.
+  indexer_timeout: 30
+
+# Cloudflare solver
+solver:
+  # Some trackers (1337x and the KickassTorrents mirrors among them) sit behind
+  # Cloudflare, and Jackett cannot answer that challenge on its own. With this
+  # on, trrnt runs a private FlareSolverr — with its own bundled browser, never
+  # yours — for the few seconds a challenge takes, then shuts it down.
+  #
+  # Jackett stores the resulting cookie and reuses it, so this runs on repair,
+  # not on every search. Set up during `trrnt setup`; ^y repairs on demand.
+  enabled: true
+  # Port for the local solver. Loopback only. If something already holds this
+  # one, trrnt quietly takes another and tells Jackett where it landed.
+  port: 8191
+  # Seconds to let a single challenge run before giving up on it.
+  timeout: 120
 
 # aria2 RPC settings
 aria2:

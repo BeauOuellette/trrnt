@@ -7,9 +7,9 @@ switched off, and would have bound aria2 to a tunnel carrying nothing.
 
 import pytest
 
-from torrentcli import vpn as vpn_module
-from torrentcli.main import _NO_TUNNEL, _resolve_bt_interface
-from torrentcli.vpn import VPNGuard
+from trrnt import vpn as vpn_module
+from trrnt.main import _NO_TUNNEL, _resolve_bt_interface
+from trrnt.vpn import VPNGuard
 
 
 # ifconfig output shaped like a real Mac with ProtonVPN up: many utun devices,

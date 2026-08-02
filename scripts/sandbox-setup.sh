@@ -81,4 +81,4 @@ echo "throwaway Jackett: http://localhost:$PORT (real one on 9117 untouched)"
 echo
 
 cd "$REPO"
-exec env HOME="$SANDBOX" "$PYTHON" -m torrentcli.main "$@"
+exec env HOME="$SANDBOX" "$PYTHON" -m trrnt.main "$@"

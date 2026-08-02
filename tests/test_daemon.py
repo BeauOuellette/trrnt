@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-import torrentcli.daemon as daemon_mod
-from torrentcli.daemon import Aria2Daemon
+import trrnt.daemon as daemon_mod
+from trrnt.daemon import Aria2Daemon
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -204,7 +204,7 @@ def loose_aria2c(tmp_path):
 
 def test_spawn_does_not_detach_and_ties_aria2_to_our_pid(daemon, monkeypatch):
     """The core fix: no --daemon=true, and --stop-with-process=<our pid>."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     monkeypatch.setattr(daemon, "is_rpc_alive", lambda timeout=2.0: False)
     daemon._spawn()
@@ -225,7 +225,7 @@ def test_rpc_port_default_is_unchanged():
 
 def test_rpc_listen_port_follows_config(make_daemon, monkeypatch):
     """A non-default rpc_url must actually bind that port, not silently 6800."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     d = make_daemon(port=6999, startup_timeout=0)
     monkeypatch.setattr(d, "is_rpc_alive", lambda timeout=2.0: False)
@@ -241,7 +241,7 @@ def test_download_tuning_flags_are_preserved(tmp_path, monkeypatch):
     tunables now come from config.yaml, so this pins what an unconfigured
     daemon gets — which is what every existing install has.
     """
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     d = Aria2Daemon({"rpc_url": "http://localhost:6800/jsonrpc"},
                     state_dir=tmp_path, startup_timeout=0)
@@ -265,7 +265,7 @@ def test_download_tuning_flags_are_preserved(tmp_path, monkeypatch):
 
 def test_auto_save_interval_is_not_zero(daemon, monkeypatch):
     """auto-save-interval=0 would drop resume data when we shut the daemon down."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     monkeypatch.setattr(daemon, "is_rpc_alive", lambda timeout=2.0: False)
     daemon._spawn()
@@ -277,7 +277,7 @@ def test_seeding_torrents_survive_a_restart(daemon, monkeypatch):
     """A finished-but-seeding torrent counts as 'completed' to aria2, so
     plain --save-session drops it — and with it, the chance to file the
     download by its contents on the next launch."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     monkeypatch.setattr(daemon, "is_rpc_alive", lambda timeout=2.0: False)
     daemon._spawn()
@@ -287,7 +287,7 @@ def test_seeding_torrents_survive_a_restart(daemon, monkeypatch):
 
 def test_event_poll_is_opt_in(tmp_path, monkeypatch):
     """Unset by default (aria2's own choice); passed through when configured."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
 
     captured = capture_spawn(monkeypatch)
     d = Aria2Daemon({}, state_dir=tmp_path, startup_timeout=0)
@@ -478,7 +478,7 @@ def _runner_script(port: int, state_dir: Path, linger: bool) -> str:
     return textwrap.dedent(f"""
         import sys, time
         sys.path.insert(0, {SRC!r})
-        import torrentcli.daemon as dmod
+        import trrnt.daemon as dmod
         dmod.download_flags = lambda cfg=None: {TEST_FLAGS!r}
         d = dmod.Aria2Daemon(
             {{"rpc_url": "http://localhost:{port}/jsonrpc"}},
@@ -548,7 +548,7 @@ def test_bind_interface_is_passed_to_aria2(tmp_path, monkeypatch):
     """Binding every socket to the tunnel is the only thing that actually keeps
     BitTorrent inside the VPN — a per-download option leaves DHT and tracker
     announces on the default route."""
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     d = Aria2Daemon({"rpc_url": "http://localhost:6800/jsonrpc"},
                     state_dir=tmp_path, startup_timeout=0,
@@ -560,7 +560,7 @@ def test_bind_interface_is_passed_to_aria2(tmp_path, monkeypatch):
 
 
 def test_no_interface_flag_when_unbound(tmp_path, monkeypatch):
-    monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
+    monkeypatch.setenv("TRRNT_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
     d = Aria2Daemon({"rpc_url": "http://localhost:6800/jsonrpc"},
                     state_dir=tmp_path, startup_timeout=0)

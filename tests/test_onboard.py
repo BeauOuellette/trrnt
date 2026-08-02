@@ -13,7 +13,7 @@ import json
 import httpx
 import pytest
 
-from torrentcli.onboard import (
+from trrnt.onboard import (
     JackettAdmin,
     JackettAdminError,
     clamav_conf_bootstrap,
@@ -275,8 +275,8 @@ def test_clamav_bootstrap_leaves_existing_confs_alone(tmp_path):
 
 import subprocess as _subprocess
 
-from torrentcli import onboard as _onboard
-from torrentcli.onboard import brew_outdated, update_check_due
+from trrnt import onboard as _onboard
+from trrnt.onboard import brew_outdated, update_check_due
 
 
 def _fake_brew(payload, monkeypatch, returncode=0):
@@ -350,7 +350,7 @@ def test_indexer_test_classifies_each_outcome():
 
 def test_curated_cloudflare_picks_are_not_default_on():
     """A first run with no FlareSolverr should end with working indexers."""
-    from torrentcli.onboard import CURATED_PUBLIC, NEEDS_SOLVER
+    from trrnt.onboard import CURATED_PUBLIC, NEEDS_SOLVER
 
     default_on = [c for c in CURATED_PUBLIC if c not in NEEDS_SOLVER]
     assert len(default_on) >= 5, "too few indexers work without a solver"

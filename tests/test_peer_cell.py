@@ -1,7 +1,7 @@
 """The Seeds column: seeders connected over total peers connected."""
 
-from torrentcli.download import DownloadStatus
-from torrentcli.tui import SEED_GOOD, SEED_NONE, SEED_WARN, _peer_cell
+from trrnt.download import DownloadStatus
+from trrnt.tui import SEED_GOOD, SEED_NONE, SEED_WARN, _peer_cell
 
 
 def _dl(status="active", seeders=0, connections=0):

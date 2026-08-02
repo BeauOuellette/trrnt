@@ -12,10 +12,10 @@ import time
 
 from textual.widgets import Input, RadioButton, SelectionList
 
-from torrentcli import onboard
-from torrentcli.config import Config
-from torrentcli.onboard import JackettAdminError
-from torrentcli.tui import SetupScreen, TGetApp
+from trrnt import onboard
+from trrnt.config import Config
+from trrnt.onboard import JackettAdminError
+from trrnt.tui import SetupScreen, TGetApp
 
 
 class FakeAdmin:
@@ -29,6 +29,13 @@ class FakeAdmin:
         self.added = []
         self.tested = []
         self.closed = False
+        self.flaresolverr = None
+
+    async def set_flaresolverr(self, url, max_timeout_ms=None):
+        self.flaresolverr = (url, max_timeout_ms)
+
+    async def wait_until_up(self, timeout=45.0):
+        return True
 
     async def test_indexer(self, indexer_id):
         self.tested.append(indexer_id)
@@ -330,6 +337,131 @@ def test_api_key_auto_read_writes_config(tmp_path, monkeypatch):
     jackett_part = text[text.index("jackett:"):text.index("aria2:")]
     assert '  api_key: "k123"' in jackett_part
     assert '  url: "http://localhost:9200"' in jackett_part
+
+
+# ── solver step ───────────────────────────────────────────────────────────────
+
+class FakeSolverProcess:
+    """Stands in for a real FlareSolverr, without the 190MB or the browser."""
+
+    started = 0
+
+    def __init__(self, port=8191):
+        self.url = f"http://127.0.0.1:{port}"
+
+    async def __aenter__(self):
+        FakeSolverProcess.started += 1
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+
+def _fake_solver(monkeypatch, installed=True):
+    from trrnt import solver as real
+    import trrnt.tui as tui
+
+    FakeSolverProcess.started = 0
+    monkeypatch.setattr(tui.solver, "installed", lambda: installed)
+    monkeypatch.setattr(tui.solver, "SolverProcess", FakeSolverProcess)
+    monkeypatch.setattr(tui.solver, "install", _unexpected_install)
+    return real
+
+
+async def _unexpected_install(on_line=None):
+    raise AssertionError("install must not run when the solver is present")
+
+
+def test_solver_step_skips_when_nothing_is_gated(tmp_path, monkeypatch):
+    """A setup with only bare-reachable indexers should not be sold a browser."""
+    _fake_solver(monkeypatch)
+    admin = FakeAdmin(configured={"thepiratebay", "therarbg"})
+
+    def body(app, pilot):
+        async def run():
+            screen = _screen(admin)
+            app.push_screen(screen)
+            await pilot.pause()
+            return await asyncio.wait_for(screen._step_solver(), timeout=5)
+        return run()
+
+    assert _run(tmp_path, body) == "–"
+    assert admin.flaresolverr is None
+    assert FakeSolverProcess.started == 0
+
+
+def test_solver_step_falls_back_to_known_gated_indexers(tmp_path, monkeypatch):
+    """The indexers step short-circuits on an existing setup and measures nothing.
+
+    The offer still has to appear, so it comes from the list of trackers known
+    to sit behind Cloudflare rather than from a measurement that never ran.
+    """
+    _fake_solver(monkeypatch)
+    admin = FakeAdmin(configured={"thepiratebay", "1337x"})
+
+    def body(app, pilot):
+        async def run():
+            screen = _screen(admin)
+            app.push_screen(screen)
+            await pilot.pause()
+            task = asyncio.create_task(screen._step_solver())
+            await _reply_when_asked(pilot, screen, ("button", "setup-solver-yes"))
+            await _reply_when_asked(pilot, screen, ("button", "setup-continue"),
+                                    previous=screen._answer)
+            return await asyncio.wait_for(task, timeout=10)
+        return run()
+
+    assert _run(tmp_path, body) == "✓"
+    assert admin.tested == ["1337x"]
+    assert FakeSolverProcess.started == 1
+
+
+def test_declining_the_solver_leaves_jackett_untouched(tmp_path, monkeypatch):
+    _fake_solver(monkeypatch)
+    admin = FakeAdmin(configured={"1337x"})
+
+    def body(app, pilot):
+        async def run():
+            screen = _screen(admin)
+            app.push_screen(screen)
+            await pilot.pause()
+            task = asyncio.create_task(screen._step_solver())
+            await _reply_when_asked(pilot, screen, ("button", "setup-skip"))
+            return await asyncio.wait_for(task, timeout=10)
+        return run()
+
+    assert _run(tmp_path, body) == "–"
+    assert admin.flaresolverr is None
+    assert admin.tested == []
+    assert FakeSolverProcess.started == 0
+
+
+def test_accepting_the_solver_wires_jackett_and_records_it(tmp_path, monkeypatch):
+    _fake_solver(monkeypatch)
+    admin = FakeAdmin(configured={"1337x"})
+
+    def body(app, pilot):
+        async def run():
+            screen = _screen(admin)
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._blocked_indexers = ["1337x"]
+            task = asyncio.create_task(screen._step_solver())
+            await _reply_when_asked(pilot, screen, ("button", "setup-solver-yes"))
+            await _reply_when_asked(pilot, screen, ("button", "setup-continue"),
+                                    previous=screen._answer)
+            return await asyncio.wait_for(task, timeout=10)
+        return run()
+
+    assert _run(tmp_path, body) == "✓"
+    # Jackett has to be told where the solver is, and given a ceiling high
+    # enough that a slow cold solve is not cut off one second early.
+    url, timeout_ms = admin.flaresolverr
+    assert url.startswith("http://127.0.0.1:")
+    assert timeout_ms == 120_000
+    text = (tmp_path / "config.yaml").read_text()
+    assert "solver:" in text
+    assert "  enabled: true" in text
 
 
 # ── leaving ───────────────────────────────────────────────────────────────────

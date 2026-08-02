@@ -13,9 +13,9 @@ import time
 import yaml
 from textual.widgets import SelectionList
 
-from torrentcli.config import Config
-from torrentcli.onboard import JackettAdminError
-from torrentcli.tui import IndexersScreen, TGetApp
+from trrnt.config import Config
+from trrnt.onboard import JackettAdminError
+from trrnt.tui import IndexersScreen, TGetApp
 
 from test_setup_screen import NullAria2
 
@@ -143,7 +143,7 @@ def test_previously_excluded_indexers_start_unticked(tmp_path):
     admin = FakeAdmin(configured=["1337x", "thepiratebay"])
     config = Config(tmp_path / "config.yaml")
     config.ensure_config_exists()
-    from torrentcli.onboard import write_config_values
+    from trrnt.onboard import write_config_values
     write_config_values(tmp_path / "config.yaml",
                         {("jackett", "exclude_indexers"): ["1337x"]})
 

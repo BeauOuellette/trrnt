@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from torrentcli.search import JackettSearch
+from trrnt.search import JackettSearch
 
 
 class Recorder(JackettSearch):
@@ -81,7 +81,7 @@ def test_broken_indexer_only_toasts_once(tmp_path):
     import sys
     sys.path.insert(0, "tests")
     from test_downloads_table import FakeConfig
-    from torrentcli.tui import TGetApp
+    from trrnt.tui import TGetApp
 
     app = TGetApp(FakeConfig({
         "vpn": {"enabled": False},
@@ -127,3 +127,33 @@ def test_broken_indexer_only_toasts_once(tmp_path):
     assert first == 1, f"warned {first} times for the same broken indexer"
     assert second == 2, "a newly broken indexer should warn again"
     assert "1337x" in info and "eztv" in info, "info bar must still list them"
+
+
+# ── error reasons ─────────────────────────────────────────────────────────────
+
+def test_a_torznab_error_in_a_400_is_read_not_discarded():
+    """Jackett wraps a solver outage in a 400 whose body says what happened.
+
+    Reporting "HTTP 400" reads as a dead tracker; the body says the solver is
+    simply not running, which is a one-keystroke fix the caller can offer.
+    """
+    from trrnt.search import _torznab_error
+
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<error code="900" description="Jackett.Common.IndexerException: '
+        'Exception (kickasstorrents-to): Error connecting to FlareSolverr '
+        'server: Connection refused (127.0.0.1:8191)" />'
+    )
+
+    reason = _torznab_error(body)
+
+    assert reason is not None
+    assert "FlareSolverr" in reason
+
+
+def test_a_non_error_body_yields_no_reason():
+    from trrnt.search import _torznab_error
+
+    assert _torznab_error("<rss><channel></channel></rss>") is None
+    assert _torznab_error("not xml at all") is None

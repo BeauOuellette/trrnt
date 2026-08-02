@@ -6,8 +6,10 @@ from typing import Any
 
 import yaml
 
+from .paths import CONFIG_PATH
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "tget" / "config.yaml"
+
+DEFAULT_CONFIG_PATH = CONFIG_PATH
 
 DEFAULTS: dict[str, Any] = {
     "jackett": {

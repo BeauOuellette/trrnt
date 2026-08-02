@@ -9,7 +9,7 @@ this module makes it happen across the download's whole life:
 * on completion — move the wanted files out of the release's gibberish
   wrapper folder into the chosen destination under the chosen name.
 
-Plans survive restarts through a JSON file in the tget state dir, keyed by a
+Plans survive restarts through a JSON file in the trrnt state dir, keyed by a
 GID we assign at add time. That key is durable: aria2's session file records
 the `gid=` option and re-creates the download under the same GID on the next
 run (verified against aria2 1.37 — the session also carries `select-file`
@@ -27,8 +27,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .daemon import STATE_DIR
 from .naming import parse_release_name
+from .paths import STATE_DIR
 from .security import VIDEO_EXTENSIONS
 
 # File types that are release-scene packaging, not content. Conservative on
@@ -141,7 +141,7 @@ class OrganizeRecord:
 
 
 class OrganizeStore:
-    """JSON-backed record set in the tget state dir.
+    """JSON-backed record set in the trrnt state dir.
 
     Reloaded before every use because the TUI and `status --watch` may both
     be running; the file is small enough that correctness wins over cleverness.

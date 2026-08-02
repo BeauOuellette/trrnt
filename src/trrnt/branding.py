@@ -9,9 +9,9 @@ reference image and hand-tuned, and neither the source nor Pillow belongs in
 the package for something that never changes at runtime.
 """
 
-from importlib.metadata import PackageNotFoundError, version
-
 from rich.text import Text
+
+from . import __version__
 
 SPLASH = [
     "█████ ████  ████  █   █ █████",
@@ -36,10 +36,11 @@ TAGLINE = "terminal torrent aggregator"
 # on that screen says the product's name. The line under the mask has to.
 HOME_TITLE = f"trrnt — {TAGLINE}"
 
-try:
-    VERSION = version("torrent-cli")
-except PackageNotFoundError:  # running from a checkout without an install
-    VERSION = "dev"
+# Straight from the package, not from installed metadata. The metadata lookup
+# keyed on the distribution name, so renaming the distribution turned the home
+# screen's version into "dev" — silently, because the fallback is a legitimate
+# state when running from a checkout. One source of truth cannot drift.
+VERSION = __version__
 
 
 def splash_text() -> Text:

@@ -15,9 +15,9 @@ Usage:
     trrnt quarantine release     Release false positive
     trrnt config                 Show/initialize config
 
-`tget` remains as an alias for the same CLI. Config still lives at
-~/.config/tget/config.yaml — the path is deliberately unchanged so existing
-configs keep working.
+Config lives at ~/.config/trrnt/config.yaml. `tget` remains as an alias for
+the same CLI, and a machine that still has ~/.config/tget/config.yaml keeps
+using it — see paths.py.
 """
 
 import asyncio
@@ -28,6 +28,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from . import __version__
 from .branding import SPLASH, SPLASH_COLORS, TAGLINE
 from .config import Config
 from .storage import DestinationUnavailable, resolve_destination, shorten
@@ -111,7 +112,7 @@ def _ensure_services(config: Config):
     result = daemon.ensure_running()
 
     if result == "adopted":
-        console.print("[dim]Using already-running aria2 (not started by tget)[/]")
+        console.print("[dim]Using already-running aria2 (not started by trrnt)[/]")
     elif result == "reclaimed":
         console.print("[dim]Reattached to aria2 left by a previous run[/]")
     elif result == "replaced":
@@ -186,6 +187,10 @@ def _shutdown_daemon(daemon):
 
 @click.group(invoke_without_command=True)
 @click.option("--config", "-c", "config_path", default=None, help="Path to config file")
+# Read from installed metadata rather than a hardcoded string, so the number a
+# user reports is the one their package manager actually put on disk. It is
+# also what the Homebrew formula's test block asserts against.
+@click.version_option(__version__, "-V", "--version", prog_name="trrnt")
 @click.pass_context
 def cli(ctx, config_path):
     """trrnt — search, select, and download torrents from your terminal."""
@@ -992,7 +997,7 @@ def config_cmd(ctx, init_config):
     else:
         console.print(f"Config path: {config.path}")
         exists = config.path.exists()
-        console.print(f"Exists: {'[green]yes[/]' if exists else '[red]no[/] (run tget config --init)'}")
+        console.print(f"Exists: {'[green]yes[/]' if exists else '[red]no[/] (run trrnt config --init)'}")
 
         if exists:
             console.print(f"\nJackett: {config.get('jackett', 'url')}")

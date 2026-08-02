@@ -2,10 +2,10 @@
 
 Background
 ----------
-tget used to spawn ``aria2c --daemon=true`` and then forget about it.
+trrnt used to spawn ``aria2c --daemon=true`` and then forget about it.
 ``--daemon=true`` makes aria2 fork and detach, so the process we actually
 launched exited immediately and the real daemon was reparented to launchd/init.
-Nothing in the codebase ever stopped it again, so every ``tget`` run could leave
+Nothing in the codebase ever stopped it again, so every ``trrnt`` run could leave
 another aria2c behind holding the RPC port and the BitTorrent listen ports —
 and aria2 is known to spin a core in a tight poll loop once it gets into a bad
 idle state.
@@ -40,13 +40,12 @@ from urllib.parse import urlparse
 import httpx
 
 from . import settings
-
 # Where we remember the PID of the daemon we started, so a later run can find a
-# leftover from a crashed session. Follows the XDG state convention.
-STATE_DIR = Path.home() / ".local" / "state" / "tget"
+# leftover from a crashed session.
+from .paths import STATE_DIR
 
 # Escalation budget for the shutdown ladder. These are deliberately short: the
-# whole point is that quitting tget must not hang, and --stop-with-process is
+# whole point is that quitting trrnt must not hang, and --stop-with-process is
 # the backstop if we run out of patience.
 GRACEFUL_TIMEOUT = 5.0   # aria2.shutdown — unregisters from trackers, saves state
 FORCE_TIMEOUT = 3.0      # aria2.forceShutdown — skips tracker contact
@@ -116,8 +115,8 @@ def _parse_etime(text: str) -> float | None:
 
 
 def _aria2c_binary() -> str | None:
-    """Locate aria2c. TGET_ARIA2C_BIN overrides PATH lookup (also used by tests)."""
-    override = os.environ.get("TGET_ARIA2C_BIN")
+    """Locate aria2c. TRRNT_ARIA2C_BIN overrides PATH lookup (also used by tests)."""
+    override = os.environ.get("TRRNT_ARIA2C_BIN")
     if override:
         return override
     return shutil.which("aria2c")
@@ -356,7 +355,7 @@ class Aria2Daemon:
 
         if self.is_rpc_alive():
             if recorded is not None:
-                # Healthy leftover from a previous tget run. Take ownership so
+                # Healthy leftover from a previous trrnt run. Take ownership so
                 # that *this* run is the one that finally shuts it down, rather
                 # than orphaning it a second time.
                 self._owned_pid = recorded

@@ -52,6 +52,26 @@ def _extract_torznab_attrs(item: dict) -> dict[str, str]:
     return attrs
 
 
+def _torznab_error(text: str) -> str | None:
+    """The reason out of a torznab <error>, whatever HTTP status carried it.
+
+    Jackett reports an indexer failure two ways: an <error> element inside a
+    200, and the same element inside a 400. Reading only the status on the
+    second turns a diagnosable "Error connecting to FlareSolverr server" into
+    a bare "HTTP 400" — which reads as a broken tracker rather than a solver
+    that simply isn't running, and costs the caller its one chance to offer
+    the right fix.
+    """
+    try:
+        err = xmltodict.parse(text).get("error")
+    except Exception:
+        return None
+    if not isinstance(err, dict):
+        return None
+    desc = err.get("@description") or "indexer error"
+    return desc.splitlines()[0][:200]
+
+
 def _detect_category(title: str, jackett_cats: list[str] | None = None) -> str:
     """Guess content category from title and Jackett category IDs."""
     title_lower = title.lower()
@@ -191,10 +211,9 @@ class JackettSearch:
 
             # Jackett reports indexer-level failures (Cloudflare challenges,
             # auth errors) as a torznab <error> element inside a 200 response.
-            err = parsed.get("error")
-            if isinstance(err, dict):
-                desc = err.get("@description", "indexer error")
-                self.last_errors.append((indexer, desc.splitlines()[0][:200]))
+            reason = _torznab_error(resp.text)
+            if reason:
+                self.last_errors.append((indexer, reason))
                 return []
 
             channel = parsed.get("rss", {}).get("channel", {})
@@ -213,7 +232,8 @@ class JackettSearch:
             self.last_errors.append((indexer, f"timed out after {self.indexer_timeout}s"))
             return []
         except httpx.HTTPStatusError as e:
-            self.last_errors.append((indexer, f"HTTP {e.response.status_code}"))
+            reason = _torznab_error(e.response.text) or f"HTTP {e.response.status_code}"
+            self.last_errors.append((indexer, reason))
             return []
         except Exception as e:
             self.last_errors.append((indexer, type(e).__name__))

@@ -7,7 +7,7 @@ parser only earns its keep against what actually arrives.
 
 from pathlib import Path
 
-from torrentcli.naming import (
+from trrnt.naming import (
     ParsedRelease,
     parse_release_name,
     recommend_folder,

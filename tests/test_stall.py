@@ -6,8 +6,8 @@ peers and still working through the metadata handshake.
 
 import pytest
 
-from torrentcli.download import DownloadStatus
-from torrentcli.tui import _STALL_REMOVE_TICKS, is_dead_magnet
+from trrnt.download import DownloadStatus
+from trrnt.tui import _STALL_REMOVE_TICKS, is_dead_magnet
 
 
 def _stuck(connections=0, total_bytes=0, speed=0):

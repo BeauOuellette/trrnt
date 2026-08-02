@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 
+from .paths import STATE_DIR
+
 # formula name -> the binary that proves it works. jackett has no CLI binary
 # on Homebrew (it ships a service), so its proof is the config it writes.
 BREW_FORMULAS = ["aria2", "jackett", "clamav"]
@@ -191,6 +193,48 @@ class JackettAdmin:
         if r.status_code >= 400:
             raise JackettAdminError(f"{indexer_id}: HTTP {r.status_code}")
 
+    async def server_config(self) -> dict:
+        """Jackett's own settings, in the lowercase shape its UI posts back."""
+        cfg = await self._get_json("/api/v2.0/server/config")
+        if not isinstance(cfg, dict):
+            raise JackettAdminError("server config came back in an unexpected shape")
+        return cfg
+
+    async def set_flaresolverr(self, url: str, max_timeout_ms: int | None = None) -> None:
+        """Point Jackett at a Cloudflare solver (or at nothing, with "").
+
+        Posting the whole config back is what the dashboard's Save does; the
+        keys are Jackett's, read straight from the GET above so we never
+        invent one. Jackett restarts itself on save, so callers must expect a
+        few seconds of unavailability afterwards.
+        """
+        cfg = await self.server_config()
+        cfg["flaresolverrurl"] = url
+        if max_timeout_ms is not None:
+            cfg["flaresolverr_maxtimeout"] = max_timeout_ms
+        try:
+            r = await self._client.post(
+                "/api/v2.0/server/config", json=cfg, timeout=httpx.Timeout(60.0),
+            )
+        except httpx.HTTPError as e:
+            raise JackettAdminError(f"saving Jackett's config failed: {e}") from e
+        if r.status_code >= 400:
+            raise JackettAdminError(f"Jackett rejected the config: HTTP {r.status_code}")
+
+    async def wait_until_up(self, timeout: float = 45.0) -> bool:
+        """Poll the dashboard back to life after a config save restarts it."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                r = await self._client.get("/UI/Dashboard", timeout=httpx.Timeout(5.0))
+                if r.status_code == 200 and "/UI/Login" not in str(r.url):
+                    return True
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(1.0)
+        return False
+
     async def test_indexer(self, indexer_id: str) -> tuple[str, str]:
         """Ask Jackett to actually query an indexer. (verdict, detail).
 
@@ -345,7 +389,7 @@ async def wait_for(predicate, timeout: float, interval: float = 0.5) -> bool:
 # --NoUpdates, deliberately, because a self-update rewriting the Cellar would
 # desync brew's idea of what is installed. So brew is the only update path,
 # and something has to remember to use it.
-UPDATE_CACHE = Path.home() / ".local" / "state" / "tget" / "update-check.json"
+UPDATE_CACHE = STATE_DIR / "update-check.json"
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # seconds
 
 

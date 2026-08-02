@@ -11,10 +11,10 @@ import pytest
 
 from textual.widgets import DataTable
 
-from torrentcli.download import DownloadStatus
-from torrentcli.organize import OrganizeRecord, OrganizeStore
-from torrentcli.search import TorrentResult
-from torrentcli.tui import (
+from trrnt.download import DownloadStatus
+from trrnt.organize import OrganizeRecord, OrganizeStore
+from trrnt.search import TorrentResult
+from trrnt.tui import (
     ACCENT,
     _FOOTER_LEFT,
     _FOOTER_RIGHT,

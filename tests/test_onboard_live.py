@@ -21,7 +21,7 @@ import os
 
 import pytest
 
-from torrentcli.onboard import (
+from trrnt.onboard import (
     CURATED_PUBLIC,
     JackettAdmin,
     order_catalog,

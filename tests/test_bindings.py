@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from torrentcli.tui import (
+from trrnt.tui import (
     UNDELIVERABLE_KEYS,
     HomeScreen,
     IndexersScreen,
@@ -153,7 +153,7 @@ def test_reconnect_pauses_then_resumes_every_active_download():
     class Recording:
         download_dir = "/tmp"
         async def get_active(self):
-            from torrentcli.download import DownloadStatus
+            from trrnt.download import DownloadStatus
             return [DownloadStatus(gid="a", status="active"),
                     DownloadStatus(gid="b", status="active")]
         async def get_waiting(self, *a, **k): return []
@@ -199,7 +199,7 @@ def test_reconnect_says_so_when_there_is_nothing_to_reconnect():
 
 
 def test_reconnect_is_in_the_footer_right_of_download():
-    from torrentcli.tui import _FOOTER_LEFT
+    from trrnt.tui import _FOOTER_LEFT
     assert _FOOTER_LEFT.index("force_reconnect") == \
            _FOOTER_LEFT.index("download_selected") + 1
 
@@ -218,7 +218,7 @@ class _Aria2:
     download_dir = "/tmp"
 
     def __init__(self, gids=("a", "b"), pause_fails=(), unpause_fails=()):
-        from torrentcli.download import DownloadStatus
+        from trrnt.download import DownloadStatus
         self._active = [DownloadStatus(gid=g, status="active") for g in gids]
         self.pause_fails, self.unpause_fails = set(pause_fails), set(unpause_fails)
         self.paused, self.resumed, self.unpause_all_called = [], [], 0
@@ -308,7 +308,7 @@ def test_pause_pauses_when_nothing_is_paused():
 
 def test_pause_resumes_when_something_is_paused():
     """Without this there is no key anywhere that can resume a download."""
-    from torrentcli.download import DownloadStatus
+    from trrnt.download import DownloadStatus
     aria2, msgs = _pause_toggle([DownloadStatus(gid="a", status="paused")])
     assert aria2.unpause_all_called == 1
     assert aria2.paused == []

@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from torrentcli.download import DownloadStatus
-from torrentcli.organize import (
+from trrnt.download import DownloadStatus
+from trrnt.organize import (
     DEFAULT_JUNK_EXTENSIONS,
     OrganizeRecord,
     OrganizeStore,

@@ -9,8 +9,8 @@ import asyncio
 
 from textual.widgets import Input
 
-from torrentcli.search import TorrentResult
-from torrentcli.tui import OrganizeChoice, OrganizeScreen, TGetApp
+from trrnt.search import TorrentResult
+from trrnt.tui import OrganizeChoice, OrganizeScreen, TGetApp
 
 
 class FakeConfig:

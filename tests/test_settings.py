@@ -7,8 +7,8 @@ from claiming a listen-port change took effect on a running daemon.
 
 import pytest
 
-from torrentcli import settings
-from torrentcli.daemon import _parse_etime, download_flags
+from trrnt import settings
+from trrnt.daemon import _parse_etime, download_flags
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────

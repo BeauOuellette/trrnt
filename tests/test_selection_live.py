@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from torrentcli.download import Aria2Client
-from torrentcli.organize import (
+from trrnt.download import Aria2Client
+from trrnt.organize import (
     OrganizeRecord,
     OrganizeStore,
     apply_pending_selection,

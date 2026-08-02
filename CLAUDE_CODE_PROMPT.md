@@ -9,7 +9,7 @@ I have a scaffolded Python project in this directory called `tget` — a termina
 ## Architecture
 
 ```
-src/torrentcli/
+src/trrnt/
 ├── main.py        # Click CLI entry point — `tget` launches TUI, subcommands for CLI mode
 ├── tui.py         # Textual interactive TUI — search, select, download, live status
 ├── search.py      # Jackett/Torznab XML search aggregation

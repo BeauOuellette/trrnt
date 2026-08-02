@@ -13,8 +13,8 @@ import time
 
 from textual.widgets import DataTable, Input, Static
 
-from torrentcli.branding import MASCOT
-from torrentcli.tui import HomeScreen, TGetApp
+from trrnt.branding import MASCOT
+from trrnt.tui import HomeScreen, TGetApp
 
 from test_downloads_table import FakeConfig
 
@@ -227,7 +227,7 @@ def _home(app):
 
 
 def test_update_line_shows_outdated_formulas(monkeypatch):
-    from torrentcli import onboard
+    from trrnt import onboard
 
     monkeypatch.setattr(onboard, "brew_path", lambda: "/opt/homebrew/bin/brew")
     monkeypatch.setattr(onboard, "read_update_cache", lambda: {})
@@ -250,7 +250,7 @@ def test_update_line_shows_outdated_formulas(monkeypatch):
 
 
 def test_no_update_line_when_current(monkeypatch):
-    from torrentcli import onboard
+    from trrnt import onboard
 
     monkeypatch.setattr(onboard, "brew_path", lambda: "/opt/homebrew/bin/brew")
     monkeypatch.setattr(onboard, "read_update_cache", lambda: {})
@@ -271,7 +271,7 @@ def test_cached_check_does_not_shell_out(monkeypatch):
     """A daily cache is the point — brew must not run on every launch."""
     import time as _time
 
-    from torrentcli import onboard
+    from trrnt import onboard
 
     calls = []
     monkeypatch.setattr(onboard, "brew_path", lambda: "/opt/homebrew/bin/brew")
@@ -294,7 +294,7 @@ def test_cached_check_does_not_shell_out(monkeypatch):
 
 
 def test_upgrade_key_runs_upgrade_and_reports(monkeypatch):
-    from torrentcli import onboard
+    from trrnt import onboard
 
     upgraded = []
     state = {"outdated": True}
@@ -330,7 +330,7 @@ def test_upgrade_key_runs_upgrade_and_reports(monkeypatch):
 
 def test_ctrl_u_still_clears_the_search_box_when_nothing_to_update(monkeypatch):
     """The binding is priority, so it must not steal Input's clear-line."""
-    from torrentcli import onboard
+    from trrnt import onboard
 
     monkeypatch.setattr(onboard, "brew_path", lambda: "/opt/homebrew/bin/brew")
     monkeypatch.setattr(onboard, "read_update_cache", lambda: {})

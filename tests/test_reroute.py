@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from torrentcli.download import DownloadStatus, predict_category
+from trrnt.download import DownloadStatus, predict_category
 
 
 def run(coro):

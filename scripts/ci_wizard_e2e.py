@@ -25,10 +25,10 @@ from pathlib import Path
 
 from textual.widgets import SelectionList
 
-from torrentcli.config import Config
-from torrentcli.onboard import JackettAdmin
-from torrentcli.search import JackettSearch
-from torrentcli.tui import SetupScreen, TGetApp
+from trrnt.config import Config
+from trrnt.onboard import JackettAdmin
+from trrnt.search import JackettSearch
+from trrnt.tui import SetupScreen, TGetApp
 
 JACKETT = os.environ.get("TRRNT_LIVE_JACKETT", "http://localhost:9118")
 # A query with results on essentially any public tracker, and legal to name.
@@ -82,7 +82,7 @@ async def main() -> int:
         # read_jackett_server_config() cannot know about, so point the
         # config at it directly — the auto-read itself is covered by
         # test_jackett_minted_its_own_api_key in the live suite.
-        from torrentcli.onboard import write_config_values
+        from trrnt.onboard import write_config_values
 
         write_config_values(config_path, {("jackett", "url"): JACKETT})
         config.reload()

@@ -36,7 +36,7 @@ from textual.widgets.selection_list import Selection
 
 from textual.theme import Theme
 
-from . import onboard, settings
+from . import onboard, settings, solver
 from .branding import (
     HOME_TITLE,
     MASCOT,
@@ -117,6 +117,21 @@ _STALL_REMOVE_TICKS = 90  # ~3min — give up, but only on a magnet with no peer
 # Everything in the results row that isn't the name: marker, index, size,
 # seeders, leechers, source, plus DataTable's cell padding. Name gets the rest.
 _RESULT_CHROME = 54
+
+# ── Search placeholder ───────────────────────────────────────────────────────
+# While a search is in flight the last query's rows are cleared and stand-ins
+# take their place, so nothing on screen claims to be current when it isn't.
+_SKELETON_FILL = "░"
+# A shade ramp the rows step through, one row out of phase with the last, which
+# reads as a wave running down the panel. Ends on the theme's rule violet.
+_SKELETON_SHADES = ("#3a3a3a", "#4a4a5a", "#5f5f87", "#4a4a5a")
+_SKELETON_TICK = 0.1  # seconds per shade step
+# Fractions of the name budget, cycled. Ragged on purpose: a block of equal
+# bars reads as a rendering fault rather than as a list of titles.
+_SKELETON_WIDTHS = (0.62, 0.44, 0.78, 0.52, 0.71, 0.58, 0.86, 0.48, 0.66, 0.55)
+# Placeholders when the table has not been laid out yet and has no height.
+_SKELETON_FALLBACK_ROWS = 8
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧"
 # Below this the Status column is dropped; the progress bar and Seeds colour
 # already carry that information.
 _WIDE = 140
@@ -247,6 +262,16 @@ def fit_source(indexer: str) -> str:
     # rstrip first, or a name that happens to break on a space renders as
     # "The Pirate …" with a gap in front of the ellipsis.
     return indexer[:SOURCE_MAX - 1].rstrip() + "…"
+
+
+def skeleton_widths(count: int, budget: int) -> list[int]:
+    """Name-column widths for `count` placeholder rows at this terminal width.
+
+    Cycled from a fixed pattern rather than randomised: the panel has to look
+    the same on every search, and a test has to be able to assert on it.
+    """
+    return [max(4, round(budget * _SKELETON_WIDTHS[i % len(_SKELETON_WIDTHS)]))
+            for i in range(count)]
 
 
 def _peer_cell(dl: DownloadStatus) -> Text:
@@ -1498,6 +1523,7 @@ class SetupScreen(Screen[None]):
         ("services", "Start services"),
         ("api_key", "Jackett API key"),
         ("indexers", "Add indexers"),
+        ("solver", "Cloudflare solver"),
         ("vpn", "VPN kill switch"),
         ("aria2", "Start aria2"),
         ("verify", "Verify"),
@@ -1511,6 +1537,10 @@ class SetupScreen(Screen[None]):
         # onboard.JackettAdmin also works.
         self._admin_factory = admin_factory
         self._marks = {key: " " for key, _ in self.STEPS}
+        # Filled in by the indexers step so the solver step knows what it
+        # would actually be fixing — testing them a second time would cost
+        # another 40 seconds to learn what we just learned.
+        self._blocked_indexers: list[str] = []
         self._answer: asyncio.Future | None = None
         self.daemon = None  # Aria2Daemon started at the end; main.py owns shutdown
 
@@ -1538,6 +1568,7 @@ class SetupScreen(Screen[None]):
             "services": self._step_services,
             "api_key": self._step_api_key,
             "indexers": self._step_indexers,
+            "solver": self._step_solver,
             "vpn": self._step_vpn,
             "aria2": self._step_aria2,
             "verify": self._step_verify,
@@ -1857,15 +1888,134 @@ class SetupScreen(Screen[None]):
             else:
                 broken.append(indexer_id)
 
+        self._blocked_indexers = blocked
+
         lines = [f"[{SEED_GOOD}]●[/] {len(working)} of {len(indexer_ids)} responding"]
         if blocked:
             lines.append(
                 f"[{SEED_WARN}]●[/] {', '.join(blocked)} — behind Cloudflare; "
-                "they need FlareSolverr and will return nothing until it is set up"
+                "the next step can unblock them"
             )
         if broken:
             lines.append(f"[{SEED_NONE}]●[/] {', '.join(broken)} — not answering right now")
         return "\n".join(lines)
+
+    async def _step_solver(self) -> str:
+        """Offer the Cloudflare solver, then prove it before moving on.
+
+        Sits right after the indexer step because that step just measured
+        which trackers are blocked — this is the answer to what it found. The
+        download is big enough that it has to be a decision rather than a
+        surprise, so the size is on screen before a byte is fetched.
+
+        Onboarding is also the right place to pay for the first solve: cookies
+        expire inside half an hour, so this is the one moment a user is
+        already waiting and does not mind a slow one.
+        """
+        candidates = list(self._blocked_indexers)
+        url = self.app.config.get("jackett", "url") or "http://localhost:9117"
+        factory = self._admin_factory or onboard.JackettAdmin
+        admin = factory(url)
+        try:
+            try:
+                await admin.login()
+            except onboard.JackettAdminError:
+                self._detail("Jackett is locked — set the solver up later with ^y.")
+                return "–"
+
+            if not candidates:
+                # The indexers step short-circuits when some are already
+                # configured, so nothing measured them. Fall back to the
+                # trackers known to sit behind Cloudflare.
+                configured = await admin.configured_ids()
+                candidates = sorted(configured & onboard.NEEDS_SOLVER)
+
+            if not candidates:
+                self._detail(
+                    "No configured indexer needs a Cloudflare solver.\n"
+                    "Add one later from the Indexers screen (^n), then press "
+                    "^y to set this up."
+                )
+                return "–"
+
+            have = solver.installed()
+            size = "already downloaded" if have else "~190MB download"
+            self._detail(
+                f"[bold]{', '.join(candidates)}[/] sit behind Cloudflare.\n"
+                "trrnt can run a private solver with its own bundled browser — "
+                "nothing opens on screen, and your own browser is never touched."
+                f"\n\n[{DIM}]{size}. Runs only while solving, then exits.[/]"
+            )
+            await self._show_widgets(Horizontal(
+                Button("Set it up", variant="primary", id="setup-solver-yes"),
+                Button("Skip", id="setup-skip"),
+            ))
+            _, pressed = await self._ask()
+            if pressed == "setup-skip":
+                return "–"
+
+            if not have:
+                log = self.query_one("#setup-log", Log)
+                log.styles.display = "block"
+                try:
+                    self._detail("Downloading the solver and its browser…")
+                    await solver.install(log.write_line)
+                except Exception as e:  # network, disk, upstream drift
+                    log.styles.display = "none"
+                    self._detail(f"Solver setup failed: {e}\nSearch works "
+                                 "without it — those indexers stay quiet.")
+                    return "✗"
+                finally:
+                    log.styles.display = "none"
+
+            port = self.app.config.get("solver", "port", default=solver.DEFAULT_PORT)
+            self._detail("Starting the solver and clearing Cloudflare…")
+            try:
+                async with solver.SolverProcess(port=port) as proc:
+                    await admin.set_flaresolverr(
+                        proc.url, solver.JACKETT_SOLVE_TIMEOUT_MS
+                    )
+                    # Saving restarts Jackett; priming before it is back just
+                    # produces a wall of connection errors.
+                    await admin.wait_until_up()
+                    done = []
+
+                    def progress(result):
+                        done.append(result)
+                        self._detail(
+                            "Clearing Cloudflare — "
+                            f"{len(done)}/{len(candidates)} done. "
+                            "A first solve takes up to a minute each."
+                        )
+
+                    results = await solver.prime(admin, candidates, on_result=progress)
+            except solver.SolverError as e:
+                self._detail(f"The solver would not start: {e}")
+                return "✗"
+
+            onboard.write_config_values(self.app.config.path, {
+                ("solver", "enabled"): True,
+                ("solver", "port"): port,
+            })
+
+            cleared = [i for i, verdict, _ in results if verdict == "ok"]
+            still = [i for i, verdict, _ in results if verdict != "ok"]
+            note = f"[{SEED_GOOD}]●[/] {len(cleared)} of {len(candidates)} cleared"
+            if still:
+                note += (f"\n[{SEED_WARN}]●[/] {', '.join(still)} still refusing "
+                         "— they may simply be down")
+            note += (f"\n[{DIM}]Jackett keeps the cookie, so searches stay fast. "
+                     "Press ^y anytime a tracker goes quiet.[/]")
+            self._detail(note)
+            await self._show_widgets(Horizontal(
+                Button("Continue", variant="primary", id="setup-continue")))
+            await self._ask()
+            return "✓" if cleared else "✗"
+        except onboard.JackettAdminError as e:
+            self._detail(f"Jackett's admin API balked ({e}) — solver skipped.")
+            return "–"
+        finally:
+            await admin.close()
 
     async def _step_vpn(self) -> str:
         iface = self.app.vpn.find_vpn_interface()
@@ -2065,6 +2215,11 @@ class TGetApp(App):
         Binding("ctrl+e", "inspect_result", "Inspect", priority=True, show=False),
         Binding("ctrl+g", "inspect_download", "Health", priority=True, show=False),
         Binding("ctrl+n", "manage_indexers", "Indexers", priority=True, show=False),
+        # Repair, not "solve": what the user experiences is an indexer that
+        # went quiet coming back, and the Cloudflare machinery behind it is
+        # not something they should have to think about.
+        Binding("ctrl+y", "repair_indexers", "Repair indexers", priority=True,
+                show=False),
         # ctrl+o rather than the conventional ctrl+comma (terminals cannot
         # deliver it) or ctrl+t (reads as "new tab" to anyone in a terminal
         # multiplexer). ctrl+s is already Search.
@@ -2098,12 +2253,23 @@ class TGetApp(App):
         # Which indexers we last warned about, so a permanently broken one
         # does not toast on every search.
         self._reported_indexer_errors: tuple[str, ...] = ()
+        # Set by _readmit when a repair had to widen the search ceiling, so
+        # the repair can say so rather than changing a setting silently.
+        self._timeout_raised: tuple[int, int] | None = None
+        # The in-flight search's placeholder rows: its timer, the shade step
+        # it is on, and an id so a search that is cancelled mid-flight tears
+        # down its own placeholder and not its replacement's.
+        self._skeleton_timer = None
+        self._skeleton_tick = 0
+        self._skeleton_id = 0
+        self._skeleton_query = ""
+        self._skeleton_max = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield StatusBar(id="status-bar")
         yield Input(placeholder="Search torrents... (Enter to search)", id="search-input")
-        yield Label("Results", classes="section-label")
+        yield Label("Results", classes="section-label", id="results-label")
         yield DataTable(id="results-table")
         yield Label("Downloads", classes="section-label")
         yield DataTable(id="downloads-table")
@@ -2705,9 +2871,16 @@ class TGetApp(App):
         quality_exclude = self.config.get("quality_exclude", default=[])
         max_results = self.config.get("display", "max_results", default=50)
 
-        self.search_results = await self.jackett.search(
-            query, quality_exclude=quality_exclude, max_results=max_results
-        )
+        token = self._start_skeleton(query, max_results)
+        try:
+            self.search_results = await self.jackett.search(
+                query, quality_exclude=quality_exclude, max_results=max_results
+            )
+        finally:
+            # Also on cancellation and on a Jackett that raises: a placeholder
+            # left ticking over a search that will never land is worse than no
+            # placeholder at all.
+            self._stop_skeleton(token)
         self.selected_indices.clear()
 
         self._render_results()
@@ -2723,9 +2896,15 @@ class TGetApp(App):
             signature = tuple(names)
             if signature != self._reported_indexer_errors:
                 self._reported_indexer_errors = signature
+                # Point at the fix that applies. A Cloudflare-gated tracker is
+                # repairable in one keystroke; anything else is a job for the
+                # indexers screen.
+                if self._repairable() and solver.installed():
+                    hint = "press ^y to repair"
+                else:
+                    hint = "press ^n to test or exclude indexers"
                 self.notify(
-                    f"Skipping {', '.join(names)} — press ^n to test or "
-                    "exclude indexers",
+                    f"Skipping {', '.join(names)} — {hint}",
                     severity="warning",
                 )
         else:
@@ -2777,6 +2956,73 @@ class TGetApp(App):
         """
         return max(12, min(100, self.size.width - _RESULT_CHROME))
 
+    def _start_skeleton(self, query: str, max_results: int) -> int:
+        """Clear the last query's rows and stand placeholders in their place.
+
+        Returns an id the caller hands back to _stop_skeleton. An exclusive
+        worker cancels its predecessor, and the cancelled search reaches its
+        `finally` after the new one has already put its own placeholder up —
+        without the id it would tear down a placeholder it does not own.
+        """
+        self._skeleton_id += 1
+        self._skeleton_tick = 0
+        self._skeleton_query = query
+        self._skeleton_max = max_results
+        self._render_skeleton()
+        if self._skeleton_timer is not None:
+            self._skeleton_timer.stop()
+        self._skeleton_timer = self.set_interval(_SKELETON_TICK, self._advance_skeleton)
+        return self._skeleton_id
+
+    def _stop_skeleton(self, token: int) -> None:
+        """Take the placeholder down, unless a newer search now owns it."""
+        if token != self._skeleton_id or self._skeleton_timer is None:
+            return
+        self._skeleton_timer.stop()
+        self._skeleton_timer = None
+        self.query_one("#results-label", Label).update("Results")
+
+    def _advance_skeleton(self) -> None:
+        self._skeleton_tick += 1
+        self._render_skeleton()
+
+    def _skeleton_rows(self) -> int:
+        """How many placeholders fill the panel at this height.
+
+        Capped at max_results so the panel never promises more rows than the
+        search can return, and never fewer than a handful when the table has
+        yet to be laid out and reports no height at all.
+        """
+        table = self.query_one("#results-table", DataTable)
+        visible = table.size.height - 1  # the header row is not a result
+        if visible < 1:
+            visible = _SKELETON_FALLBACK_ROWS
+        return max(1, min(visible, self._skeleton_max))
+
+    def _render_skeleton(self) -> None:
+        """Draw one frame: shaded stand-in rows, and a spinner on the label.
+
+        Rebuilt per frame rather than updated cell by cell — the whole point
+        is that every row's shade moves, so there is nothing to spare.
+        """
+        tick = self._skeleton_tick
+        label = Text("Results  ")
+        label.append(_SPINNER_FRAMES[tick % len(_SPINNER_FRAMES)], style=ACCENT)
+        label.append(f' searching "{fit_name(self._skeleton_query, 40)}"…', style=DIM)
+        self.query_one("#results-label", Label).update(label)
+
+        table = self.query_one("#results-table", DataTable)
+        table.clear()
+        budget = self.name_budget()
+        for i, width in enumerate(skeleton_widths(self._skeleton_rows(), budget)):
+            # One step out of phase per row, so the wave runs down the panel.
+            shade = _SKELETON_SHADES[(tick - i) % len(_SKELETON_SHADES)]
+            # Name, size, seeders, leechers, source. Only the name varies —
+            # the rest are as wide as the values they stand in for.
+            cells = [Text(_SKELETON_FILL * n, style=shade)
+                     for n in (width, 6, 3, 3, 7)]
+            table.add_row(" ", Text(str(i + 1), style=DIM), *cells)
+
     def _render_results(self) -> None:
         """Draw the results table at the current terminal width."""
         table = self.query_one("#results-table", DataTable)
@@ -2798,7 +3044,11 @@ class TGetApp(App):
 
     async def on_resize(self, event) -> None:
         """Re-fit both tables when the window changes size."""
-        if self.search_results:
+        if self._skeleton_timer is not None:
+            # A search is in flight: refit the placeholder, not the rows it
+            # replaced — repainting those would put stale results back up.
+            self._render_skeleton()
+        elif self.search_results:
             self._render_results()
         await self._update_downloads()
 
@@ -2808,6 +3058,141 @@ class TGetApp(App):
 
     def action_manage_indexers(self) -> None:
         self.push_screen(IndexersScreen())
+
+    def _repairable(self) -> list[str]:
+        """Indexers from the last search that a solver could plausibly fix.
+
+        A Cloudflare-gated tracker fails two ways: Jackett says so outright,
+        or it simply runs past the per-indexer timeout while a solve it cannot
+        perform drags on. Both are worth offering to repair; a genuinely dead
+        tracker is not, and stays out of the offer.
+        """
+        gated = []
+        for indexer_id, reason in self.jackett.last_errors:
+            lowered = reason.lower()
+            if (indexer_id in onboard.NEEDS_SOLVER
+                    or "flaresolverr" in lowered
+                    or "cloudflare" in lowered
+                    or "timed out" in lowered):
+                gated.append(indexer_id)
+        return gated
+
+    def action_repair_indexers(self) -> None:
+        self._repair_indexers()
+
+    def _readmit(self, indexer_ids: list[str]) -> None:
+        """Put repaired indexers back in the search.
+
+        Without this the repair is a dead end: people exclude a tracker
+        precisely because it kept failing, so the one that most needs fixing
+        is the one still switched off after it is fixed. Only ever removes
+        from the exclude list — a deliberate exclusion of a *working* indexer
+        is never touched, because those are not repair targets to begin with.
+        """
+        excluded = set(self.config.get("jackett", "exclude_indexers") or [])
+        keep = excluded - set(indexer_ids)
+        changes: dict[tuple[str, str], object] = {}
+        if keep != excluded:
+            changes[("jackett", "exclude_indexers")] = sorted(keep)
+
+        # A ceiling tuned to cut off a hanging tracker will also cut off a
+        # Cloudflare-backed one, which is legitimately slow — repairing an
+        # indexer that then times out on every search is not a repair. Raised
+        # only as far as it needs to go, and only alongside an actual fix.
+        # The effective ceiling, not just the explicit key: search.py falls
+        # back to `timeout` when indexer_timeout is unset, so a low overall
+        # timeout gates a solver-backed indexer just as hard.
+        current = self.config.get("jackett", "indexer_timeout", default=None)
+        if current is None:
+            current = self.config.get("jackett", "timeout", default=None)
+        if current is not None and current < solver.MIN_INDEXER_TIMEOUT:
+            changes[("jackett", "indexer_timeout")] = solver.MIN_INDEXER_TIMEOUT
+            self._timeout_raised = (current, solver.MIN_INDEXER_TIMEOUT)
+
+        if not changes:
+            return
+        try:
+            onboard.write_config_values(self.config.path, changes)
+        except OSError as e:
+            self.notify(f"Repaired, but could not save: {e}", severity="warning")
+            return
+        self.config.reload()
+        # Rebuild the client so the very next search includes them, rather
+        # than leaving the fix invisible until relaunch.
+        self.jackett = JackettSearch(self.config.get("jackett"))
+
+    @work(exclusive=True, group="solver_repair")
+    async def _repair_indexers(self) -> None:
+        """Mint fresh Cloudflare cookies for whatever went quiet.
+
+        Deliberately a keystroke rather than something on a timer: the only
+        honest way to test a clearance cookie is to spend one on a real query,
+        and doing that on a schedule would hammer the trackers. Cookies also
+        outlive the app, so most launches need this never.
+        """
+        if not solver.installed():
+            self.notify(
+                "Cloudflare solver isn't set up — run `trrnt setup` to add it.",
+                severity="warning",
+            )
+            return
+
+        targets = self._repairable()
+        url = self.config.get("jackett", "url") or "http://localhost:9117"
+        admin = onboard.JackettAdmin(url)
+        try:
+            await admin.login()
+            configured = await admin.configured_ids()
+            if not targets:
+                # Nothing failed in the last search — but an indexer switched
+                # off *because* it kept failing never fails again, it just
+                # stays quiet forever. Those are exactly what this repairs.
+                excluded = set(self.config.get("jackett", "exclude_indexers") or [])
+                targets = sorted(
+                    (configured & onboard.NEEDS_SOLVER) | (configured & excluded)
+                )
+            if not targets:
+                self.notify("Nothing to repair — every indexer is answering.")
+                return
+
+            self.notify(f"Repairing {', '.join(targets)} — this can take a minute.")
+            port = self.config.get("solver", "port", default=solver.DEFAULT_PORT)
+            async with solver.SolverProcess(port=port) as proc:
+                await admin.set_flaresolverr(
+                    proc.url, solver.JACKETT_SOLVE_TIMEOUT_MS
+                )
+                await admin.wait_until_up()
+                results = await solver.prime(admin, targets)
+
+            cleared = [i for i, verdict, _ in results if verdict == "ok"]
+            failed = [i for i, verdict, _ in results if verdict != "ok"]
+            self._timeout_raised = None
+            self._readmit(cleared)
+            if self._timeout_raised:
+                was, now = self._timeout_raised
+                self.notify(
+                    f"Raised the per-indexer timeout from {was}s to {now}s — "
+                    "a Cloudflare-backed tracker needs ~15s to answer.",
+                )
+            if cleared and not failed:
+                self.notify(f"Repaired {', '.join(cleared)} — search again.")
+            elif cleared:
+                self.notify(
+                    f"Repaired {', '.join(cleared)}; {', '.join(failed)} still "
+                    "won't answer.", severity="warning",
+                )
+            else:
+                self.notify(
+                    f"Couldn't repair {', '.join(failed)} — they may be down.",
+                    severity="error",
+                )
+            # The next search's toast should reflect what just changed rather
+            # than staying suppressed by the old failure signature.
+            self._reported_indexer_errors = ()
+        except (onboard.JackettAdminError, solver.SolverError) as e:
+            self.notify(f"Repair failed: {e}", severity="error")
+        finally:
+            await admin.close()
 
     def action_show_settings(self) -> None:
         """Open settings against whichever daemon this session is actually using.
