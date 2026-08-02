@@ -37,7 +37,14 @@ from textual.widgets.selection_list import Selection
 from textual.theme import Theme
 
 from . import onboard, settings
-from .branding import TAGLINE, VERSION, splash_text
+from .branding import (
+    HOME_TITLE,
+    MASCOT,
+    MASCOT_WIDTH,
+    VERSION,
+    mascot_text,
+    splash_text,
+)
 from .config import Config
 from .download import Aria2Client, DownloadStatus, predict_category
 from .naming import parse_release_name, recommend_folder, suggest_name
@@ -93,6 +100,14 @@ TRACK = "#3a3a3a"       # 237 — the unfilled half of a progress bar
 
 # Shown when a finished download is re-filed by its contents.
 _CATEGORY_ICONS = {"audiobooks": "🎧", "comics": "💥", "ebooks": "📚"}
+
+# What the home screen's mask needs before it is worth showing. Height is the
+# mask itself plus everything stacked under it — its own bottom margin, the
+# title and its margin, the search box, the health, version and hints lines.
+# Measured, not estimated: at two rows less the mask still fits but the hints
+# line falls off the bottom, which is the failure this gate exists to prevent.
+_MASCOT_MIN_WIDTH = MASCOT_WIDTH + 6
+_MASCOT_MIN_HEIGHT = len(MASCOT) + 17
 
 # Stall detection, counted in refresh ticks of ~2s each.
 _STALL_WARN_TICKS = 30    # ~60s — say something
@@ -1021,6 +1036,10 @@ class HomeScreen(Screen[str | None]):
        widths make the block itself the column; text-align does the rest. */
     HomeScreen > * { width: 64; max-width: 90%; }
     HomeScreen > Static { text-align: center; }
+    /* The mask's bottom row is sparse enough to read as part of the gap, so
+       the mark carries the separation rather than the title — that way the
+       wordmark fallback gets the same air without a second rule. */
+    #home-logo { margin-bottom: 2; }
     #home-tagline { color: $text-muted; margin-bottom: 2; }
     #home-status { margin-top: 1; }
     #home-meta { color: $text-muted; margin-top: 1; }
@@ -1046,8 +1065,8 @@ class HomeScreen(Screen[str | None]):
         self._moving = 0
 
     def compose(self) -> ComposeResult:
-        yield Static(splash_text(), id="home-logo")
-        yield Static(TAGLINE, id="home-tagline")
+        yield Static(self._logo(), id="home-logo")
+        yield Static(HOME_TITLE, id="home-tagline")
         yield Input(placeholder="Search torrents... (Enter to search)", id="home-search")
         yield Static("", id="home-status")
         yield Static("", id="home-meta")
@@ -1057,6 +1076,22 @@ class HomeScreen(Screen[str | None]):
             f"[bold {ACCENT}]^k[/] keys   [bold {ACCENT}]^q[/] quit",
             id="home-hints",
         )
+
+    def _logo(self) -> Text:
+        """The mask where it fits, the wordmark where it does not.
+
+        The mask needs 52 columns and most of a 40-line window. Below either
+        it would wrap or push the search box off screen, and a landing page
+        you cannot type into is worse than a smaller logo.
+        """
+        if (self.app.size.width >= _MASCOT_MIN_WIDTH
+                and self.app.size.height >= _MASCOT_MIN_HEIGHT):
+            return mascot_text()
+        return splash_text()
+
+    def on_resize(self, event) -> None:
+        """Swap the mark when the window crosses what the mask needs."""
+        self.query_one("#home-logo", Static).update(self._logo())
 
     def on_mount(self) -> None:
         url = self.app.config.get("jackett", "url", default="") or ""

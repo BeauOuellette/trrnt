@@ -11,8 +11,9 @@ fire twice.
 import asyncio
 import time
 
-from textual.widgets import DataTable, Input
+from textual.widgets import DataTable, Input, Static
 
+from torrentcli.branding import MASCOT
 from torrentcli.tui import HomeScreen, TGetApp
 
 from test_downloads_table import FakeConfig
@@ -347,3 +348,93 @@ def test_ctrl_u_still_clears_the_search_box_when_nothing_to_update(monkeypatch):
         return box.value
 
     assert _run(app, body) == ""
+
+
+# ── which mark leads the page ─────────────────────────────────────────────────
+
+def _run_sized(app, body, size):
+    async def go():
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            return await body(app, pilot)
+    return asyncio.run(go())
+
+
+def _logo(screen) -> str:
+    return str(screen.query_one("#home-logo", Static).content)
+
+
+def _is_wordmark(text: str) -> bool:
+    """The wordmark is drawn in full blocks; the mask never uses them."""
+    return "█" in text
+
+
+def test_a_roomy_window_leads_with_the_mask():
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        return _logo(app.screen)
+
+    text = _run_sized(_app(), body, (120, 44))
+    assert not _is_wordmark(text)
+    assert len(text.splitlines()) == len(MASCOT)
+
+
+def test_a_short_window_falls_back_to_the_wordmark():
+    """The mask plus a search box does not fit; a landing page you cannot
+    type into is worse than a smaller logo."""
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        return _logo(app.screen)
+
+    assert _is_wordmark(_run_sized(_app(), body, (120, 30)))
+
+
+def test_a_narrow_window_falls_back_to_the_wordmark():
+    """The mask is a fixed 52 columns wide — it cannot be cut down."""
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        return _logo(app.screen)
+
+    assert _is_wordmark(_run_sized(_app(), body, (50, 44)))
+
+
+def test_resizing_swaps_the_mark():
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        before = _logo(app.screen)
+        await pilot.resize_terminal(120, 28)
+        await pilot.pause()
+        after = _logo(app.screen)
+        return before, after
+
+    before, after = _run_sized(_app(), body, (120, 44))
+    assert not _is_wordmark(before)
+    assert _is_wordmark(after), "shrinking should fall back to the wordmark"
+
+
+def test_the_title_names_the_product():
+    """With the wordmark gone, this line is the only thing that says trrnt."""
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        return str(app.screen.query_one("#home-tagline", Static).content)
+
+    title = _run_sized(_app(), body, (120, 44))
+    assert "trrnt" in title
+    assert "terminal torrent aggregator" in title
+
+
+def test_the_mask_never_pushes_the_hints_off_screen():
+    """The height gate's whole job. At two rows less the mask still fits but
+    the hints line falls off the bottom, which is the failure it prevents."""
+    async def body(app, pilot):
+        await _settle(pilot, lambda: isinstance(app.screen, HomeScreen), timeout=0.3)
+        await asyncio.sleep(0.1)
+        await pilot.pause()
+        hints = app.screen.query_one("#home-hints", Static)
+        return _is_wordmark(_logo(app.screen)), hints.region.y + hints.region.height
+
+    for height in (30, 38, 39, 40, 44, 50):
+        wordmark, bottom = _run_sized(_app(), body, (120, height))
+        assert bottom <= height, (
+            f"hints clipped at {height} lines (ends at {bottom}, "
+            f"showing {'wordmark' if wordmark else 'mask'})")
