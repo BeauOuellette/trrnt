@@ -132,6 +132,15 @@ _SKELETON_WIDTHS = (0.62, 0.44, 0.78, 0.52, 0.71, 0.58, 0.86, 0.48, 0.66, 0.55)
 # Placeholders when the table has not been laid out yet and has no height.
 _SKELETON_FALLBACK_ROWS = 8
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧"
+
+# ── Toasts ───────────────────────────────────────────────────────────────────
+# Severity reaches the toast as a CSS class, which colours the frame; the emoji
+# is what carries it at a glance, before any of the words are read. All three
+# have emoji presentation by default, so they are two cells wide everywhere and
+# the message starts at the same column — ⚠️ needs a variation selector to
+# render as emoji at all, and a terminal without the font draws it as a
+# hairline triangle in one cell, leaving that toast's text a column short.
+_TOAST_EMOJI = {"information": "✨", "warning": "🚧", "error": "⛔"}
 # Below this the Status column is dropped; the progress bar and Seeds colour
 # already carry that information.
 _WIDE = 140
@@ -2160,12 +2169,45 @@ class TGetApp(App):
         margin: 0 1 1 1;
         overflow-x: hidden;
     }
+    ToastRack {
+        /* Bottom centre, over the foot of the downloads panel, rather than
+           Textual's top-right corner — there it sat across the Name column of
+           whatever was downloading, which is the one column worth reading. */
+        align: center bottom;
+        /* Clears the key bar, the info bar, and the table's bottom margin, so
+           the toast lands on the panel's last rows rather than the chrome. */
+        margin-bottom: 3;
+        /* Textual reserves the scrollbar gutter whether or not it scrolls,
+           and two columns of gutter on the right is two columns of centring
+           error. It only ever scrolls with a pile of toasts up at once. */
+        overflow-y: auto;
+    }
+    ToastHolder {
+        align-horizontal: center;
+    }
     Toast {
-        /* Textual's default is 60 wide, which at 102 columns blankets the
-           whole Downloads row while the message is up. Narrower leaves the
-           name, size and progress readable underneath. */
-        width: 44;
-        max-width: 44;
+        /* Sized to its message: at the centre of the screen a fixed width
+           leaves a short line stranded in the middle of a wide box. */
+        width: auto;
+        max-width: 64;
+        /* No vertical padding — the round border already gives the message a
+           line of air above and below, and three rows of downloads covered is
+           enough. */
+        padding: 0 1;
+        background: #2a2438;
+        color: $foreground;
+        border: round $secondary;
+    }
+    /* The frame carries severity in the theme's own colours: violet for
+       ordinary news, and the same gold and pink the seed counts use. */
+    Toast.-information {
+        border: round $primary;
+    }
+    Toast.-warning {
+        border: round $warning;
+    }
+    Toast.-error {
+        border: round $error;
     }
     #key-bar {
         dock: bottom;
@@ -2267,6 +2309,19 @@ class TGetApp(App):
         self._skeleton_id = 0
         self._skeleton_query = ""
         self._skeleton_max = 0
+
+    def notify(self, message: str, *, title: str = "", severity: str = "information",
+               timeout: float | None = None, markup: bool = True) -> None:
+        """Badge every toast with its severity.
+
+        Overridden here rather than at the call sites: Widget.notify defers to
+        the app, so every screen's toasts pick this up, including the wizard's.
+        """
+        emoji = _TOAST_EMOJI.get(severity, "")
+        if emoji:
+            message = f"{emoji}  {message}"
+        super().notify(message, title=title, severity=severity,
+                       timeout=timeout, markup=markup)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -2867,7 +2922,9 @@ class TGetApp(App):
                 self.notify("VPN not connected — search blocked", severity="error")
                 return
 
-        self.notify(f"Searching: {query}...")
+        # No toast: the placeholder rows and the spinner on the Results label
+        # say a search is running, and say which query, without covering the
+        # downloads panel every time somebody presses enter.
         info = self.query_one("#info-bar", Static)
         info.update("Searching...")
 
@@ -2879,12 +2936,17 @@ class TGetApp(App):
             self.search_results = await self.jackett.search(
                 query, quality_exclude=quality_exclude, max_results=max_results
             )
+        except Exception as e:  # Jackett down, or gone while we were talking
+            # CancelledError is a BaseException, so a search superseded by the
+            # next one lands elsewhere — this is only for a search that broke.
+            self._render_results()  # clears the placeholder rows
+            info.update(f"Search failed: {e}")
+            self.notify(f"Search failed: {e}", severity="error")
+            return
         finally:
-            # Also on cancellation and on a Jackett that raises: a placeholder
-            # left ticking over a search that will never land is worse than no
-            # placeholder at all.
+            # Also on cancellation: a placeholder left ticking over a search
+            # that will never land is worse than no placeholder at all.
             self._stop_skeleton(token)
-        self.selected_indices.clear()
 
         self._render_results()
 
@@ -2971,6 +3033,14 @@ class TGetApp(App):
         self._skeleton_tick = 0
         self._skeleton_query = query
         self._skeleton_max = max_results
+        # The rows are gone, so the results behind them have to go too: a
+        # cursor sitting on placeholder row 3 with the last query's results
+        # still in hand is a ^d away from downloading something nobody asked
+        # for. The cursor comes off for the same reason — there is nothing
+        # under it worth selecting until the search lands.
+        self.search_results = []
+        self.selected_indices.clear()
+        self.query_one("#results-table", DataTable).cursor_type = "none"
         self._render_skeleton()
         if self._skeleton_timer is not None:
             self._skeleton_timer.stop()
@@ -2984,6 +3054,7 @@ class TGetApp(App):
         self._skeleton_timer.stop()
         self._skeleton_timer = None
         self.query_one("#results-label", Label).update("Results")
+        self.query_one("#results-table", DataTable).cursor_type = "row"
 
     def _advance_skeleton(self) -> None:
         self._skeleton_tick += 1

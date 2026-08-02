@@ -96,24 +96,26 @@ async def _during_search(app, land, query="super mario galaxy"):
         await gate.wait()
         return land()
 
+    toasts = []
+
     async with app.run_test(size=(110, 40)) as pilot:
-        app.notify = lambda *a, **k: None
+        app.notify = lambda msg, **kw: toasts.append((msg, kw.get("severity")))
         _seed(app)
         app.jackett.search = hangs
         task = asyncio.create_task(app.run_search.__wrapped__(app, query))
         await pilot.pause()
         table = app.query_one("#results-table")
         mid = {"rows": table.row_count, "first": _name(table, 0),
-               "label": _label(app), "ticking": app._skeleton_timer is not None}
+               "label": _label(app), "ticking": app._skeleton_timer is not None,
+               "results": list(app.search_results), "cursor": table.cursor_type}
         gate.set()
-        try:
-            await task
-        except RuntimeError:
-            pass
+        await task
         await pilot.pause()
         after = {"rows": table.row_count,
                  "first": _name(table, 0) if table.row_count else "",
-                 "label": _label(app), "ticking": app._skeleton_timer is not None}
+                 "label": _label(app), "ticking": app._skeleton_timer is not None,
+                 "cursor": table.cursor_type, "toasts": toasts,
+                 "info": str(app.query_one("#info-bar").render())}
         return mid, after
 
 
@@ -148,6 +150,19 @@ def test_a_failed_search_does_not_leave_the_placeholder_ticking():
     assert _SKELETON_FILL in mid["first"]
     assert not after["ticking"]
     assert after["label"] == "Results"
+    assert after["rows"] == 0, "the stand-ins were left on screen"
+    assert "jackett fell over" in after["info"], "the info bar never said why"
+    assert ("Search failed: jackett fell over", "error") in after["toasts"]
+
+
+def test_the_previous_query_cannot_be_downloaded_from_a_placeholder():
+    """The rows under the cursor are stand-ins, but search_results used to
+    still hold the last query — ^d on placeholder row 3 would have downloaded
+    the third result of a search nobody is looking at any more."""
+    mid, after = asyncio.run(_during_search(_app(), lambda: []))
+    assert mid["results"] == [], "the last query's results were still selectable"
+    assert mid["cursor"] == "none", "the cursor invited a selection"
+    assert after["cursor"] == "row", "the cursor never came back"
 
 
 def test_a_superseded_search_does_not_take_down_the_new_placeholder():
