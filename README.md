@@ -2,88 +2,72 @@
 
 Search, select, and download torrents entirely from your terminal with VPN enforcement and Plex integration.
 
-## Architecture
-
-```
-┌─────────────┐     ┌───────────┐     ┌─────────────┐
-│  trrnt CLI  │────▶│  Jackett  │────▶│  Indexers   │
-│  or TUI     │     │  Torznab  │     │ (50+ sites) │
-└──────┬──────┘     └───────────┘     └─────────────┘
-       │
-       │  magnet/torrent
-       ▼
-┌──────────────┐     ┌───────────┐
-│  VPN Guard   │────▶│  aria2c   │────▶ Downloads
-│  kill switch │     │  RPC      │
-└──────────────┘     └──────┬────┘
-                            │ on complete
-                            ▼
-                     ┌──────────┐
-                     │  Plex    │────▶ Library scan
-                     │  API     │
-                     └──────────┘
-```
-
-## Prerequisites
-
-1. **Jackett** — torrent indexer aggregator
-   ```bash
-   # macOS
-   brew install jackett
-   # Or Docker
-   docker run -d --name jackett -p 9117:9117 linuxserver/jackett
-   ```
-
-2. **aria2** — download engine
-   ```bash
-   brew install aria2
-   # Start with RPC enabled:
-   aria2c --enable-rpc --rpc-listen-all=false --rpc-allow-origin-all \
-          --seed-ratio=2.0 --bt-enable-lpd=true --enable-dht=true
-   ```
-
-3. **ProtonVPN** (or any VPN that creates a `utun` interface on macOS)
-
-4. **ClamAV** — virus scanning
-   ```bash
-   brew install clamav
-   # Initialize virus database
-   sudo freshclam
-   # Start daemon for fast scanning
-   clamd
-   ```
-
-5. **Plex Media Server** (optional) — for auto library scanning
-
 ## Install
 
+Homebrew, on macOS:
+
 ```bash
-cd torrent-cli
-pip install -e .
+brew install BeauOuellette/tap/trrnt
 ```
+
+Or, with no package manager of your own:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BeauOuellette/trrnt/main/install.sh | sh
+```
+
+Or, if you already keep CLI tools in [uv](https://docs.astral.sh/uv/) or pipx:
+
+```bash
+uv tool install trrnt
+```
+
+All three put a `trrnt` command on your PATH, usable from any directory.
 
 ## Setup
 
 ```bash
-# Create config file
-trrnt config --init
-
-# Edit with your credentials
-$EDITOR ~/.config/tget/config.yaml
+trrnt
 ```
 
-> The command was renamed from `tget` to `trrnt`. `tget` still works as an
-> alias. The config directory stays `~/.config/tget/` so existing configs
-> keep working.
+That is the setup. The first launch opens a wizard that installs what is
+missing, starts it, and writes your config — there is no API key to copy out
+of a web page, because Jackett mints one on its first start and the wizard
+reads it from Jackett's own config file.
 
-### Required config values:
-- `jackett.api_key` — Find in Jackett UI at http://localhost:9117
-- `plex.token` — Get from https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+It will:
 
-### Recommended config:
-- `vpn.interface_prefix` — `utun` for macOS ProtonVPN
-- `categories.movies.path` / `categories.tv.path` — Your Plex library directories
-- `aria2.bt_interface` — Set to your VPN interface (e.g., `utun4`) for interface-level binding
+1. **Install aria2 and Jackett** via Homebrew, then start Jackett.
+   Homebrew installs aria2 as a formula dependency, so that step is usually
+   already done.
+2. **Read Jackett's API key** and pick indexers that actually answer — the
+   curated public list minus the ones sitting behind Cloudflare, which need
+   FlareSolverr to work at all.
+3. **Offer ClamAV** for scanning finished downloads. Optional, and a large
+   install; declining is a supported state, not a degraded one.
+4. **Write `~/.config/trrnt/config.yaml`.**
+
+Every step is safe to re-run — quit half way and `trrnt setup` picks it back
+up — and every automated step has a manual fallback.
+
+You still need a **VPN** yourself. trrnt binds every aria2 socket to the
+tunnel interface and refuses to start the download engine when no tunnel is
+carrying traffic, but it does not install or manage one. On macOS anything
+that creates a `utun` interface works (ProtonVPN, Mullvad, WireGuard).
+
+**Plex** is optional. Set `plex.token` to have completed downloads trigger a
+library scan; leave it blank and that step is skipped.
+
+> Upgrading from `tget`? The command was renamed but `tget` still works as an
+> alias, and an existing `~/.config/tget/` keeps being used — nothing to
+> migrate. New installs get `~/.config/trrnt/`.
+
+### Config values worth setting by hand
+
+- `categories.movies.path` / `categories.tv.path` — your library directories
+- `aria2.bt_interface` — pin your VPN interface (e.g. `utun4`) instead of
+  letting trrnt detect it each launch
+- `plex.token` — [finding an auth token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
 
 ## Usage
 
@@ -271,10 +255,31 @@ The setup wizard's quick-pick pre-selects popular public indexers, then
 **tests each one it added** and tells you which actually answer. Some
 trackers (1337x, EZTV, KickassTorrents among them) sit behind Cloudflare:
 Jackett cannot reach them on its own, because solving that challenge needs a
-real browser. They are offered but left unticked, labelled *needs
-FlareSolverr* — configure [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)
-and set its URL in Jackett to enable them. This is not a Jackett version
-problem and upgrading will not fix it.
+real browser. This is not a Jackett version problem and upgrading will not
+fix it.
+
+trrnt can run that browser for you. The wizard offers a **Cloudflare solver**
+step: a private [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)
+with its own bundled copy of Chrome for Testing (~190MB, one download). It is
+never your browser, nothing appears on screen, and it runs only for the few
+seconds a challenge takes before shutting down again.
+
+Jackett stores the resulting clearance cookie per indexer and replays it, so
+solving happens on repair rather than on every search — a search works with
+the solver stopped entirely. Cookies do expire, though, typically inside half
+an hour. When one does, that indexer is skipped and the toast says so:
+
+```
+Skipping 1337x — press ^y to repair
+```
+
+**^y** mints fresh cookies for whatever went quiet, puts any indexer you had
+switched off back into the search once it answers, and widens the per-indexer
+timeout if it is too tight for a Cloudflare-backed tracker to reply. The other
+indexers carry the search while it works, so nothing blocks on it.
+
+Setting `solver.enabled: false` turns the whole thing off; the gated indexers
+then simply stay quiet, exactly as before.
 
 ## Testing the setup wizard
 
@@ -289,20 +294,65 @@ scripts/sandbox-setup.sh --reset
 
 `--reset` returns it to first-run state; `--clean` removes it entirely.
 
+## Architecture
+
+```
+┌─────────────┐     ┌───────────┐     ┌─────────────┐
+│  trrnt CLI  │────▶│  Jackett  │────▶│  Indexers   │
+│  or TUI     │     │  Torznab  │     │ (50+ sites) │
+└──────┬──────┘     └───────────┘     └─────────────┘
+       │
+       │  magnet/torrent
+       ▼
+┌──────────────┐     ┌───────────┐
+│  VPN Guard   │────▶│  aria2c   │────▶ Downloads
+│  kill switch │     │  RPC      │
+└──────────────┘     └──────┬────┘
+                            │ on complete
+                            ▼
+                     ┌──────────┐
+                     │  Plex    │────▶ Library scan
+                     │  API     │
+                     └──────────┘
+```
+
 ## Project Structure
 
 ```
-src/torrentcli/
+src/trrnt/
 ├── main.py        # CLI entry point (click)
 ├── tui.py         # Interactive TUI (textual)
+├── onboard.py     # First-run wizard: detection, Jackett's admin API, config
 ├── search.py      # Jackett/Torznab search
 ├── download.py    # aria2 JSON-RPC client
+├── daemon.py      # aria2c lifecycle: start, adopt, guaranteed shutdown
 ├── vpn.py         # VPN guard + kill switch
 ├── plex.py        # Plex Media Server client
 ├── security.py    # ClamAV scanning, file enforcement, quarantine
+├── naming.py      # Release name → clean name + destination
+├── organize.py    # Junk pruning before download, filing on completion
+├── storage.py     # Destination resolution across external volumes
 ├── settings.py    # Tunable aria2 options + when each actually applies
-└── config.py      # YAML config loader
+├── config.py      # YAML config loader
+├── paths.py       # Config/state locations, with the tget fallback
+└── branding.py    # The mask, the splash, the palette
 ```
+
+Packaging and release plumbing:
+
+```
+install.sh                     # curl-able bootstrap (uv or pipx, no sudo)
+scripts/brew_formula.py        # generates the Homebrew formula, resources and all
+.github/workflows/release.yml  # tag → build → release → PyPI + tap
+```
+
+The formula is generated, never hand-written: Homebrew pins every transitive
+Python dependency by URL and sha256, and that list is only correct for one
+exact build. `scripts/brew_formula.py` resolves it with `uv pip compile` — the
+same resolver the project is developed against — hashes the sdist that was
+just built, and CI pushes the result to the tap. It is not committed here,
+because a checked-in copy would carry a sha256 that is wrong the moment
+anything in `src/` changes.
 
 ## Phase 2 Roadmap
 

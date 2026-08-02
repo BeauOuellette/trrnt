@@ -1,0 +1,150 @@
+name: Release
+
+# Push a tag, get an install. `git tag v0.2.0 && git push origin v0.2.0` builds
+# the artifacts, cuts the GitHub release, and — if they are switched on —
+# publishes to PyPI and bumps the Homebrew tap.
+#
+# The two optional channels are gated on repository *variables* rather than on
+# the presence of a secret, so a repo with neither configured still gets a
+# clean, complete release instead of two red jobs:
+#
+#   vars.PUBLISH_TO_PYPI = "true"                  → publish to PyPI
+#   vars.HOMEBREW_TAP    = "OWNER/homebrew-tap"    → push the formula there
+#                                                    (needs secrets.HOMEBREW_TAP_TOKEN)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Tag must match the packaged version
+        # Otherwise `trrnt --version` disagrees with the release the user
+        # installed it from, and the Homebrew formula pins a URL built from
+        # the tag while its test block asserts the packaged number.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c "import re,pathlib; \
+            print(re.search(r'__version__ = \"([^\"]+)\"', \
+            pathlib.Path('src/trrnt/__init__.py').read_text()).group(1))")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match __version__ $pkg"
+            exit 1
+          fi
+          echo "version=$pkg" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Tests
+        run: |
+          pip install -e ".[dev]"
+          pytest -q
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "trrnt $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
+
+  pypi:
+    name: PyPI
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing: PyPI verifies this workflow's OIDC identity, so
+      # there is no API token to store or rotate.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  homebrew:
+    name: Homebrew tap
+    # build for the version output, release because a formula must never point
+    # at a release asset that does not exist yet.
+    needs: [build, release]
+    if: vars.HOMEBREW_TAP != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Generate the formula
+        # --tarball hashes the sdist we just built rather than re-downloading
+        # it from the release, so the pin is of the exact bytes published.
+        run: |
+          python3 scripts/brew_formula.py \
+            --version "${{ needs.build.outputs.version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tarball "dist/trrnt-${{ needs.build.outputs.version }}.tar.gz" \
+            -o Formula/trrnt.rb
+
+      - name: Check out the tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Commit the bump
+        run: |
+          mkdir -p tap/Formula
+          cp Formula/trrnt.rb tap/Formula/trrnt.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "formula already current — nothing to push"
+            exit 0
+          fi
+          git add Formula/trrnt.rb
+          git commit -m "trrnt ${{ needs.build.outputs.version }}"
+          git push

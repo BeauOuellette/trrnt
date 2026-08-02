@@ -17,3 +17,9 @@ build/
 # Mascot generator and its reference image. Kept locally, not shipped: the
 # baked art in branding.py is what the app actually uses.
 /tools/
+
+# The Homebrew formula is generated per release by scripts/brew_formula.py and
+# pushed to the tap. Committing it here would mean carrying a sha256 that is
+# wrong the moment anything in src/ changes — the tap holds the only copy that
+# is ever valid.
+/Formula/
