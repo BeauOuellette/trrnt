@@ -9,7 +9,10 @@ import asyncio
 
 import pytest
 
+from textual.widgets import DataTable
+
 from torrentcli.download import DownloadStatus
+from torrentcli.organize import OrganizeRecord, OrganizeStore
 from torrentcli.search import TorrentResult
 from torrentcli.tui import (
     _FOOTER_LEFT,
@@ -91,6 +94,8 @@ def _app():
     app.check_clamav_status = lambda *a, **k: None
     app.check_vpn_status = lambda *a, **k: None
     app.refresh_downloads_loop = lambda *a, **k: None
+    # These tests live on the working screen; the landing page has its own.
+    app.push_home_screen = lambda *a, **k: None
     return app
 
 
@@ -104,14 +109,23 @@ def _run(size, body):
 
 # ── fit_name ──────────────────────────────────────────────────────────────────
 
-def test_fit_name_keeps_the_distinguishing_tail():
-    """Releases differ at the end, so a plain right-cut loses the only part
-    that separates two rows."""
+def test_fit_name_favors_the_front_and_keeps_a_tail_hint():
+    """The head carries what a row is picked by — title, SxxEyy, resolution.
+    A tail-heavy split used to trade the episode number for audio tags at
+    ordinary window widths; only a short group-tag hint survives now."""
     out = fit_name(LONG, 52)
     assert len(out) == 52
-    assert out.endswith("DDP5 1 DV")
+    assert "S02E02" in out
     assert out.startswith("The Agency")
+    assert out.endswith(LONG[-8:])
     assert "…" in out
+
+
+def test_fit_name_keeps_the_episode_number_at_narrow_widths():
+    """The reported case: at a ~46-char name column the old 42/58 split
+    rendered "The Agency 2024 S0…" — episode gone, tail junk kept."""
+    out = fit_name(LONG, 46)
+    assert "S02E02" in out
 
 
 def test_fit_name_leaves_short_names_alone():
@@ -315,3 +329,92 @@ def test_every_hidden_binding_is_reachable_from_the_overlay():
     hidden = {b.action for b in TGetApp.BINDINGS if not b.show}
     assert hidden <= listed, f"unreachable: {hidden - listed}"
     assert "pause_all" in hidden and "pause_all" in listed
+
+
+# ── Row naming ────────────────────────────────────────────────────────────────
+# Release folders lead with the tracker's stamp, so a column of them truncates
+# to identical prefixes. The name chosen at add time is what a row should wear.
+
+def _store(tmp_path, *records):
+    store = OrganizeStore(tmp_path / "organize.json")
+    for record in records:
+        store.add(record)
+    return store
+
+
+def _run_with_store(size, store, body):
+    async def go():
+        app = _app()
+        app.organize_store = store
+        async with app.run_test(size=size):
+            return await body(app)
+    return asyncio.run(go())
+
+
+def test_row_wears_the_name_chosen_at_add_time(tmp_path):
+    """The reported case: two `www.UIndex.org - …` rows you cannot tell apart."""
+    store = _store(tmp_path, OrganizeRecord(
+        gid="abc123", dir="/tmp", name="The Agency S02E02",
+    ))
+
+    async def body(app):
+        await app._update_downloads()
+        table = app.query_one("#downloads-table", DataTable)
+        return table.get_row_at(0)[0]
+
+    assert "The Agency S02E02" in _run_with_store((120, 40), store, body)
+    assert "PMTP" not in _run_with_store((120, 40), store, body)
+
+
+def test_as_is_download_keeps_the_release_name(tmp_path):
+    """"As-is" stores an empty name — there is nothing better to show."""
+    store = _store(tmp_path, OrganizeRecord(gid="abc123", dir="/tmp", name=""))
+
+    async def body(app):
+        return app.download_display_name(ACTIVE)
+
+    assert _run_with_store((120, 40), store, body) == LONG
+
+
+def test_download_with_no_record_keeps_the_release_name(tmp_path):
+    store = _store(tmp_path)
+
+    async def body(app):
+        return app.download_display_name(ACTIVE)
+
+    assert _run_with_store((120, 40), store, body) == LONG
+
+
+def test_name_survives_the_magnet_gid_switch(tmp_path):
+    """A magnet is added under one GID and downloads under the follow-up.
+
+    The row shows the follow-up, so matching only on the original would drop
+    the name at exactly the moment the download starts moving.
+    """
+    store = _store(tmp_path, OrganizeRecord(
+        gid="original", dir="/tmp", name="Kitsune 2024", active_gid="abc123",
+    ))
+
+    async def body(app):
+        return app.download_display_name(ACTIVE)
+
+    assert _run_with_store((120, 40), store, body) == "Kitsune 2024"
+
+
+def test_a_shared_directory_never_lends_its_name(tmp_path):
+    """match() falls back to the directory; by_gid must not.
+
+    An as-is download into a category root that holds exactly one organized
+    record would otherwise render under that record's name — a row claiming
+    to be a torrent it is not.
+    """
+    store = _store(tmp_path, OrganizeRecord(
+        gid="someone-else", dir="/tmp", name="A Different Movie",
+    ))
+    assert store.match("abc123", "/tmp") is not None   # the looser rule hits
+    assert store.by_gid("abc123") is None              # the strict one does not
+
+    async def body(app):
+        return app.download_display_name(ACTIVE)
+
+    assert _run_with_store((120, 40), store, body) == LONG

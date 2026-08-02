@@ -14,6 +14,7 @@ DEFAULTS: dict[str, Any] = {
         "url": "http://localhost:9117",
         "api_key": "",
         "indexers": [],
+        "exclude_indexers": [],
         "timeout": 30,
     },
     "aria2": {
@@ -21,7 +22,23 @@ DEFAULTS: dict[str, Any] = {
         "rpc_secret": "",
         "download_dir": str(Path.home() / "Downloads" / "torrents"),
         "max_concurrent": 3,
+        # Global throttles, in aria2's notation: bare bytes/sec or a K/M
+        # suffix. "0" is unlimited.
+        "max_download_rate": "0",
+        "max_upload_rate": "0",
+        # Seeding. These two zeroes mean opposite things, which is aria2's
+        # design, not ours: ratio 0 seeds forever, seed_time 0 never seeds.
+        # Blank seed_time means no time limit.
         "seed_ratio": 2.0,
+        "seed_time": "",
+        # BitTorrent listen port. A range is fine; pin a single port if your
+        # VPN forwards one, since that is what makes you connectable.
+        "listen_port": "6881-6999",
+        # MSE/PE peer encryption: "off", "prefer", or "require".
+        "encryption": "prefer",
+        # Local Peer Discovery broadcasts your torrents to the LAN, which is
+        # outside the tunnel. aria2's own default is off and so is ours.
+        "enable_lpd": False,
         "bt_interface": "",
         # aria2 event backend. Empty = aria2's own default (kqueue on macOS).
         # Set to "poll" or "select" if aria2c ever starts spinning a core while
@@ -63,6 +80,21 @@ DEFAULTS: dict[str, Any] = {
         # quietly absorb downloads onto the boot disk.
         "require_mount": True,
     },
+    "organize": {
+        # Ask for a clean name + destination in the TUI before each download.
+        "rename_prompt": True,
+        # Deselect junk files in aria2 before any payload byte downloads.
+        "exclude_junk": True,
+        # Treated as junk inside torrents. Ambiguous types are exempted per
+        # category in organize.effective_junk (cover art for music/audiobooks,
+        # .txt for ebooks); subtitles are never junk.
+        "junk_extensions": [
+            ".nfo", ".sfv", ".srr", ".srs", ".diz", ".url", ".website",
+            ".torrent", ".md5", ".sha1", ".sha256",
+            ".txt", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+            ".htm", ".html",
+        ],
+    },
     "quality_exclude": ["CAM", "TS", "HDCAM"],
     "security": {
         "clamav_enabled": True,
@@ -76,7 +108,7 @@ DEFAULTS: dict[str, Any] = {
             ".wsf", ".app",
         ],
     },
-    "display": {"max_results": 50, "default_sort": "seeders"},
+    "display": {"max_results": 50, "default_sort": "seeders", "home": True},
 }
 
 
@@ -96,6 +128,11 @@ class Config:
 
     def __init__(self, path: str | Path | None = None):
         self._path = Path(path) if path else DEFAULT_CONFIG_PATH
+        self._data = DEFAULTS.copy()
+        self._load()
+
+    def reload(self) -> None:
+        """Re-read config.yaml — the setup wizard writes it mid-session."""
         self._data = DEFAULTS.copy()
         self._load()
 

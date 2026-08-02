@@ -9,3 +9,7 @@ build/
 .venv/
 .pytest_cache/
 
+
+# Claude Code local permission grants — machine-specific, not project config
+.claude/settings.local.json
+.claude/settings_local.json

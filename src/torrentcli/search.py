@@ -122,6 +122,15 @@ class JackettSearch:
         self.base_url = config.get("url", "http://localhost:9117").rstrip("/")
         self.api_key = config.get("api_key", "")
         self.indexers = config.get("indexers", [])
+        # Indexers to skip, by id. A blocklist rather than an allowlist on
+        # purpose: `indexers` pins the search to exactly what it lists, so a
+        # newly added tracker would be silently ignored until someone
+        # remembered to add it. Excluding is the common case — one tracker
+        # sits behind Cloudflare and errors on every search — and that
+        # should not mean maintaining the full list by hand.
+        self.exclude_indexers = {
+            i.strip().lower() for i in config.get("exclude_indexers", []) or []
+        }
         self.timeout = config.get("timeout", 30)
         # Per-indexer ceiling. A single slow/broken indexer (e.g. one hitting a
         # Cloudflare challenge) must not be able to stall the whole search past
@@ -221,6 +230,13 @@ class JackettSearch:
 
         async with httpx.AsyncClient(timeout=self.indexer_timeout) as client:
             indexers = self.indexers if self.indexers else await self._list_indexers(client)
+            if self.exclude_indexers:
+                kept = [i for i in indexers if i.lower() not in self.exclude_indexers]
+                # Never let an exclusion list empty the search entirely — that
+                # would look like "no results" forever with nothing to explain
+                # it. Excluding everything is a config mistake, not an intent.
+                if kept:
+                    indexers = kept
 
             # Query every indexer in parallel so a slow one only delays itself,
             # capped per-indexer. Healthy indexers still return their results.

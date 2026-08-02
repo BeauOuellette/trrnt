@@ -152,7 +152,7 @@ def forbid_spawn(monkeypatch) -> None:
 @pytest.fixture
 def make_daemon(tmp_path, monkeypatch):
     """Factory for Aria2Daemon instances that clean themselves up."""
-    monkeypatch.setattr(daemon_mod, "_DOWNLOAD_FLAGS", TEST_FLAGS)
+    monkeypatch.setattr(daemon_mod, "download_flags", lambda cfg=None: TEST_FLAGS)
     created: list[Aria2Daemon] = []
 
     def _make(port: int | None = None, **kwargs) -> Aria2Daemon:
@@ -235,9 +235,11 @@ def test_rpc_listen_port_follows_config(make_daemon, monkeypatch):
 
 
 def test_download_tuning_flags_are_preserved(tmp_path, monkeypatch):
-    """Lifecycle work must not change how anything downloads.
+    """A config with no tunables set still spawns aria2 the way trrnt intends.
 
-    Deliberately uses the real _DOWNLOAD_FLAGS, not the inert test set.
+    Deliberately uses the real download_flags, not the inert test set. The
+    tunables now come from config.yaml, so this pins what an unconfigured
+    daemon gets — which is what every existing install has.
     """
     monkeypatch.setenv("TGET_ARIA2C_BIN", FAKE_ARIA2C)
     captured = capture_spawn(monkeypatch)
@@ -249,9 +251,14 @@ def test_download_tuning_flags_are_preserved(tmp_path, monkeypatch):
     for flag in ("--seed-ratio=2.0", "--split=16", "--bt-max-peers=100",
                  "--min-split-size=1M", "--listen-port=6881-6999",
                  "--dht-listen-port=6881-6999", "--enable-dht=true",
-                 "--enable-dht6=true", "--bt-enable-lpd=true",
-                 "--max-concurrent-downloads=5", "--max-connection-per-server=16",
-                 "--bt-request-peer-speed-limit=5M", "--enable-peer-exchange=true"):
+                 "--enable-dht6=true", "--max-connection-per-server=16",
+                 "--bt-request-peer-speed-limit=5M", "--enable-peer-exchange=true",
+                 # Was hardcoded to 5, which silently ignored the config key
+                 # of the same name. It now honours it; 3 is the default.
+                 "--max-concurrent-downloads=3",
+                 # Was hardcoded on. LPD announces your torrents to the LAN,
+                 # which is outside the tunnel — aria2's own default is off.
+                 "--bt-enable-lpd=false"):
         assert flag in captured["args"], f"lost download flag {flag}"
     d._owned_pid = None
 
@@ -472,7 +479,7 @@ def _runner_script(port: int, state_dir: Path, linger: bool) -> str:
         import sys, time
         sys.path.insert(0, {SRC!r})
         import torrentcli.daemon as dmod
-        dmod._DOWNLOAD_FLAGS = {TEST_FLAGS!r}
+        dmod.download_flags = lambda cfg=None: {TEST_FLAGS!r}
         d = dmod.Aria2Daemon(
             {{"rpc_url": "http://localhost:{port}/jsonrpc"}},
             state_dir={str(state_dir)!r},

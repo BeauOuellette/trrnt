@@ -4,7 +4,7 @@ import asyncio
 import json
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +48,11 @@ async def predict_category(client: "Aria2Client", config, dl) -> str | None:
     except DestinationUnavailable:
         return None
 
-    if target == Path(dl.dir):
-        return None  # the search-time guess was right
+    dl_dir = Path(dl.dir)
+    if target == dl_dir or target in dl_dir.parents:
+        # Search-time guess was right — including organized downloads whose
+        # dir is a Show/Season folder *inside* the category root.
+        return None
     return category
 
 
@@ -67,6 +70,9 @@ class DownloadStatus:
     connections: int = 0
     error_message: str = ""
     dir: str = ""
+    # GIDs of downloads this one generated — for a magnet or .torrent URL,
+    # the follow-up that carries the actual torrent once metadata resolves.
+    followed_by: list[str] = field(default_factory=list)
 
     @property
     def progress(self) -> float:
@@ -151,12 +157,20 @@ class Aria2Client:
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(self.rpc_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            # aria2 wraps RPC errors ("No such download for GID#…") in an
+            # HTTP 400, so the JSON-RPC error envelope must be read before
+            # raising on status — callers distinguish "aria2 said no" from
+            # "couldn't reach aria2" by exception type.
+            try:
+                data = resp.json()
+            except ValueError:
+                resp.raise_for_status()
+                raise
 
             if "error" in data:
                 raise RuntimeError(f"aria2 error: {data['error'].get('message', data['error'])}")
 
+            resp.raise_for_status()
             return data.get("result")
 
     async def add_magnet(
@@ -164,6 +178,7 @@ class Aria2Client:
         magnet: str,
         download_dir: str | None = None,
         category: str = "",
+        extra_options: dict[str, str] | None = None,
     ) -> str:
         """Add a magnet link. Returns GID."""
         options: dict[str, str] = {
@@ -183,6 +198,9 @@ class Aria2Client:
             Path(cat_dir).mkdir(parents=True, exist_ok=True)
             options["dir"] = cat_dir
 
+        if extra_options:
+            options.update(extra_options)
+
         result = await self._call("addUri", [[magnet], options])
         return result
 
@@ -191,6 +209,7 @@ class Aria2Client:
         url: str,
         download_dir: str | None = None,
         category: str = "",
+        extra_options: dict[str, str] | None = None,
     ) -> str:
         """Add a .torrent URL. Returns GID."""
         options: dict[str, str] = {
@@ -209,6 +228,9 @@ class Aria2Client:
             Path(cat_dir).mkdir(parents=True, exist_ok=True)
             options["dir"] = cat_dir
 
+        if extra_options:
+            options.update(extra_options)
+
         result = await self._call("addUri", [[url], options])
         return result
 
@@ -220,12 +242,50 @@ class Aria2Client:
         result = await self._call("getFiles", [gid])
         return [f.get("path", "") for f in (result or []) if f.get("path")]
 
+    async def get_files_detailed(self, gid: str) -> list[dict]:
+        """Files with the fields selection needs: index, path, length, selected."""
+        result = await self._call("getFiles", [gid])
+        files = []
+        for f in result or []:
+            try:
+                files.append({
+                    "index": int(f["index"]),
+                    "path": f.get("path", ""),
+                    "length": int(f.get("length", 0)),
+                    "selected": f.get("selected") == "true",
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+        return files
+
+    async def change_option(self, gid: str, options: dict[str, str]) -> str:
+        """Change per-download options. Note: for a torrent, `dir` only
+        *pretends* to change (see predict_category) — but input-file options
+        like select-file and pause-metadata do take effect on paused
+        downloads, which the junk-exclusion flow relies on."""
+        return await self._call("changeOption", [gid, options])
+
+    async def change_global_option(self, options: dict[str, str]) -> str:
+        """Change daemon-wide options.
+
+        aria2 answers "OK" to far more than it actually applies: the global
+        throttles take effect on the running daemon, seeding and encryption
+        become the template for *newly added* downloads, and socket-level
+        options like listen-port are stored and ignored until a restart. The
+        tiers in settings.py are what keep callers honest about which is which.
+        """
+        return await self._call("changeGlobalOption", [options])
+
+    async def get_global_option(self) -> dict:
+        """The daemon's current global options, as aria2 sees them."""
+        return await self._call("getGlobalOption") or {}
+
     async def get_status(self, gid: str) -> DownloadStatus:
         """Get status of a specific download."""
         keys = [
             "gid", "status", "totalLength", "completedLength",
             "downloadSpeed", "uploadSpeed", "numSeeders", "connections",
-            "errorMessage", "dir", "bittorrent",
+            "errorMessage", "dir", "bittorrent", "followedBy",
         ]
         result = await self._call("tellStatus", [gid, keys])
         return self._parse_status(result)
@@ -308,4 +368,5 @@ class Aria2Client:
             connections=int(data.get("connections", 0)),
             error_message=data.get("errorMessage", ""),
             dir=data.get("dir", ""),
+            followed_by=list(data.get("followedBy", []) or []),
         )

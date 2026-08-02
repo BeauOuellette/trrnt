@@ -39,6 +39,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import settings
+
 # Where we remember the PID of the daemon we started, so a later run can find a
 # leftover from a crashed session. Follows the XDG state convention.
 STATE_DIR = Path.home() / ".local" / "state" / "tget"
@@ -53,23 +55,64 @@ SIGTERM_TIMEOUT = 3.0    # SIGTERM before we resort to SIGKILL
 # How long to wait for a freshly spawned daemon to start answering RPC.
 STARTUP_TIMEOUT = 10.0
 
-# Download tuning. Copied verbatim from the original spawn site so that daemon
-# ownership changes do not change how anything downloads.
-_DOWNLOAD_FLAGS = [
+# Download tuning that nobody has asked to change. The rest moved into
+# config.yaml and arrives via download_flags().
+_STATIC_FLAGS = [
     "--enable-dht=true",
     "--enable-dht6=true",
-    "--seed-ratio=2.0",
-    "--max-concurrent-downloads=5",
     "--max-connection-per-server=16",
     "--split=16",
     "--min-split-size=1M",
     "--bt-max-peers=100",
     "--bt-request-peer-speed-limit=5M",
     "--enable-peer-exchange=true",
-    "--bt-enable-lpd=true",
-    "--listen-port=6881-6999",
-    "--dht-listen-port=6881-6999",
 ]
+
+
+def download_flags(aria2_config: dict | None = None) -> list[str]:
+    """Every tunable spawn flag, derived from the aria2 config section.
+
+    Spawn is the one moment all three setting tiers land at once — it is the
+    only place a restart-tier setting like the listen port can take hold at
+    all — so this deliberately asks settings.aria2_options for the lot.
+
+    Missing keys fall back to DEFAULTS rather than to aria2's own defaults:
+    an older config.yaml written before these keys existed should still get
+    trrnt's seeding and encryption behaviour, not aria2's.
+    """
+    from .config import DEFAULTS
+
+    cfg = aria2_config or {}
+    fallback = DEFAULTS["aria2"]
+    values = {f.key: cfg.get(f.key, fallback.get(f.key)) for f in settings.FIELDS}
+    options = settings.aria2_options(
+        values,
+        tiers=(settings.TIER_LIVE, settings.TIER_NEW, settings.TIER_RESTART),
+    )
+    return [*_STATIC_FLAGS, *(f"--{key}={value}" for key, value in sorted(options.items()))]
+
+
+def _parse_etime(text: str) -> float | None:
+    """Seconds from ps(1) elapsed time: ``[[DD-]HH:]MM:SS``."""
+    text = text.strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        day_part, _, text = text.partition("-")
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+    parts = text.split(":")
+    try:
+        numbers = [int(p) for p in parts]
+    except ValueError:
+        return None
+    while len(numbers) < 3:
+        numbers.insert(0, 0)  # MM:SS -> 0:MM:SS
+    hours, minutes, seconds = numbers[-3:]
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def _aria2c_binary() -> str | None:
@@ -135,6 +178,9 @@ class Aria2Daemon:
         bind_interface: str = "",
     ):
         cfg = aria2_config or {}
+        # Kept whole so _spawn can rebuild its tunable flags from it; the
+        # settings screen edits config.yaml and a restart re-reads them.
+        self._cfg = cfg
         self.rpc_url = cfg.get("rpc_url") or "http://localhost:6800/jsonrpc"
         self.secret = cfg.get("rpc_secret", "") or ""
         # Optional escape hatch: aria2 has historically shipped idle busy-loop
@@ -216,6 +262,40 @@ class Aria2Daemon:
             return (self._rpc("getGlobalOption") or {}).get("interface", "") or ""
         except Exception:
             return ""
+
+    def daemon_pid(self) -> int | None:
+        """PID of the daemon we are talking to, when we can know it.
+
+        A daemon we adopted from someone else was never recorded anywhere, so
+        this is None for it — which is honest, and why the settings header
+        simply omits uptime rather than guessing.
+        """
+        if self._owned_pid is not None:
+            return self._owned_pid
+        return self._read_pidfile()
+
+    def uptime_seconds(self) -> float | None:
+        """How long the daemon process has been up, or None if unknowable.
+
+        Read from ps(1) rather than remembered from our own spawn, so that a
+        reclaimed daemon reports its real age. Uptime is the only thing that
+        distinguishes a healthy daemon from one that silently crashed and was
+        respawned under us — a reset to near-zero means anything mid-flight
+        was interrupted.
+        """
+        pid = self.daemon_pid()
+        if pid is None:
+            return None
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "etime=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode != 0:
+            return None
+        return _parse_etime(out.stdout)
 
     def queue_is_empty(self) -> bool:
         """True if the daemon has nothing active or waiting.
@@ -328,7 +408,7 @@ class Aria2Daemon:
             # user's ~/.aria2/aria2.conf cannot disable control-file saving and
             # cost them resume data when we shut the daemon down.
             "--auto-save-interval=60",
-            *_DOWNLOAD_FLAGS,
+            *download_flags(self._cfg),
         ]
 
         if self.bind_interface:

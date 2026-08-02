@@ -1,7 +1,8 @@
 """trrnt — Terminal torrent aggregator & downloader.
 
 Usage:
-    trrnt                        Launch interactive TUI
+    trrnt                        Launch interactive TUI (setup wizard on first run)
+    trrnt setup                  Re-run the setup wizard
     trrnt search "query"         Quick search from CLI
     trrnt add <magnet/url>       Add a download directly
     trrnt status                 Show active downloads
@@ -27,41 +28,26 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from .branding import SPLASH, SPLASH_COLORS, TAGLINE
 from .config import Config
-from .storage import DestinationUnavailable, resolve_destination
+from .storage import DestinationUnavailable, resolve_destination, shorten
 
 console = Console()
-
-
-# Startup banner. Shown only while aria2/clamd are coming up — the TUI clears
-# the screen when it launches, so this costs no permanent rows in the interface.
-_SPLASH = [
-    "█████ ████  ████  █   █ █████",
-    "  █   █   █ █   █ ██  █   █  ",
-    "  █   ████  ████  █ █ █   █  ",
-    "  █   █  █  █  █  █  ██   █  ",
-    "  █   █   █ █   █ █   █   █  ",
-]
-
-# Top-to-bottom gradient in the TUI's violet family. Each value is an exact
-# xterm-256 slot, so it survives Terminal.app's 256-colour quantisation
-# unchanged — an interpolated ramp would land on whatever the cube rounds to.
-# Runs from a light tint through the accent (140) down to the selection (60).
-_SPLASH_COLORS = ["#d7afff", "#af87d7", "#875fd7", "#875faf", "#5f5f87"]
 
 
 def _print_splash():
     """Print the logo while services start.
 
-    Skipped when stdout is not a terminal so piping or redirecting output never
-    picks up banner bytes.
+    Shown only while aria2/clamd are coming up — the TUI's home screen takes
+    over the moment the app launches. Skipped when stdout is not a terminal so
+    piping or redirecting output never picks up banner bytes.
     """
     if not console.is_terminal:
         return
     console.print()
-    for line, color in zip(_SPLASH, _SPLASH_COLORS):
+    for line, color in zip(SPLASH, SPLASH_COLORS):
         console.print(f"  [bold {color}]{line}[/]")
-    console.print("  [dim]terminal torrent aggregator[/]\n")
+    console.print(f"  [dim]{TAGLINE}[/]\n")
 
 
 # Sentinel: VPN enforcement is on but no tunnel is carrying traffic.
@@ -181,6 +167,23 @@ def run_async(coro):
     return asyncio.run(coro)
 
 
+def _shutdown_daemon(daemon):
+    """Stop an aria2 daemon we own. Aria2Daemon.shutdown() is idempotent
+    and a no-op for a daemon we merely adopted, so this is safe on every
+    exit path — and it is what stops us orphaning aria2c.
+    is_rpc_alive() first: if aria2 already died we can't know what was
+    queued, and shouldn't claim anything was saved."""
+    if daemon is None:
+        return
+    if (daemon.owns_daemon and daemon.is_rpc_alive()
+            and not daemon.queue_is_empty()):
+        console.print(
+            "[dim]Stopping aria2 — unfinished downloads are saved "
+            "and resume next launch.[/]"
+        )
+    daemon.shutdown()
+
+
 @click.group(invoke_without_command=True)
 @click.option("--config", "-c", "config_path", default=None, help="Path to config file")
 @click.pass_context
@@ -190,27 +193,39 @@ def cli(ctx, config_path):
     ctx.obj["config"] = get_config(config_path)
 
     if ctx.invoked_subcommand is None:
-        # Auto-start services before launching TUI
-        _print_splash()
-        daemon = _ensure_services(ctx.obj["config"])
+        config = ctx.obj["config"]
+        # No config file means a first run: hand the whole job — installs,
+        # services, config — to the in-TUI wizard. _ensure_services would
+        # only print noise about things that aren't installed yet.
+        first_run = not config.path.exists()
+        daemon = None
+        if first_run:
+            console.print("[dim]First run — opening setup…[/]")
+        else:
+            # Auto-start services before launching TUI
+            _print_splash()
+            daemon = _ensure_services(config)
         from .tui import run_tui
+        wizard_daemon = None
         try:
-            run_tui(ctx.obj["config"])
+            wizard_daemon = run_tui(config, setup=first_run, daemon=daemon)
         finally:
-            # Stop the daemon we started. Aria2Daemon.shutdown() is idempotent
-            # and a no-op for a daemon we merely adopted, so this is safe on
-            # every exit path — and it is what stops us orphaning aria2c.
-            # is_rpc_alive() first: if aria2 already died we can't know what was
-            # queued, and shouldn't claim anything was saved.
-            # daemon is None when we refused to start it unbound.
-            if daemon is not None:
-                if (daemon.owns_daemon and daemon.is_rpc_alive()
-                        and not daemon.queue_is_empty()):
-                    console.print(
-                        "[dim]Stopping aria2 — unfinished downloads are saved "
-                        "and resume next launch.[/]"
-                    )
-                daemon.shutdown()
+            # daemon is None when we refused to start it unbound, or on a
+            # first run; the wizard's daemon comes back from run_tui.
+            _shutdown_daemon(daemon)
+            _shutdown_daemon(wizard_daemon)
+
+
+@cli.command("setup")
+@click.pass_context
+def setup_cmd(ctx):
+    """Re-run the first-run setup wizard."""
+    from .tui import run_tui
+    daemon = None
+    try:
+        daemon = run_tui(ctx.obj["config"], setup=True)
+    finally:
+        _shutdown_daemon(daemon)
 
 
 # ─── Search ───────────────────────────────────────────────────────────────────
@@ -417,24 +432,49 @@ def status(ctx, watch):
     config = ctx.obj["config"]
 
     async def _status():
-        from .download import Aria2Client, predict_category
+        from .download import Aria2Client, DownloadStatus, predict_category
+        from .organize import (
+            OrganizeStore,
+            apply_pending_selection,
+            cleanup_wrapper,
+            configured_junk,
+            effective_junk,
+            find_orphan_records,
+            organize_download,
+        )
         from .security import SecurityScanner
 
         aria2 = Aria2Client(config.get("aria2"))
         scanner = SecurityScanner(config.get("security"))
+        store = OrganizeStore()
         scanned_gids: set[str] = set()
         routed_gids: set[str] = set()
+        refresh_tick = 0
 
         while True:
             try:
                 active = await aria2.get_active()
                 waiting = await aria2.get_waiting(count=10)
-                stopped = await aria2.get_stopped(count=5)
+                # 25, not 5: metadata parents also land in the stopped list
+                # and can push a real completion out of the window unscanned.
+                stopped = await aria2.get_stopped(count=25)
                 stats = await aria2.get_global_stat()
             except Exception as e:
                 console.print(f"[red]Cannot reach aria2:[/] {e}")
                 console.print("Make sure aria2 is running: [bold]aria2c --enable-rpc[/]")
                 return
+
+            # Deselect junk on follow-up downloads whose metadata resolved
+            # (plans made in the TUI are serviced here too). No VPN gate:
+            # aria2's interface binding is what encloses torrent traffic,
+            # and it applies regardless of what this loop does.
+            if watch:
+                try:
+                    store.reload()
+                    if store.pending():
+                        await apply_pending_selection(aria2, store, config)
+                except Exception:
+                    pass
 
             if watch:
                 console.clear()
@@ -509,6 +549,23 @@ def status(ctx, watch):
             # up here too — waiting for seed-ratio can mean waiting forever.
             if watch and config.get("security", "scan_on_complete"):
                 finished = [d for d in stopped if d.status == "complete"]
+
+                # Fold in downloads aria2 has already forgotten (result
+                # cleared before the scan saw it) — the plan record is the
+                # surviving evidence. First pass and every ~2 minutes.
+                refresh_tick += 1
+                if refresh_tick % 60 == 1:
+                    try:
+                        store.reload()
+                        finished += [
+                            DownloadStatus(
+                                gid=r.active_gid or r.gid, status="complete",
+                                name=r.wrapper, dir=r.dir,
+                            )
+                            for r in await find_orphan_records(aria2, store)
+                        ]
+                    except Exception:
+                        pass
                 finished += [
                     d for d in active
                     if d.total_bytes > 0 and d.completed_bytes >= d.total_bytes
@@ -519,6 +576,78 @@ def status(ctx, watch):
                         if not dl.dir:
                             continue
                         dl_dir = Path(dl.dir)
+                        async def _stop_seeding(gid=dl.gid):
+                            """Release the files before moving them — aria2
+                            loses track of a torrent the moment it is moved."""
+                            for call in (aria2.force_remove, aria2.remove_result):
+                                try:
+                                    await call(gid)
+                                except Exception:
+                                    pass  # already stopped
+
+                        record = None
+                        try:
+                            store.reload()
+                            record = store.match(dl.gid, dl.dir)
+                        except Exception:
+                            record = None
+
+                        # Remapped downloads were written straight to their
+                        # final names: scan the files where they lie, drop
+                        # the junk-placeholder wrapper, keep seeding. Mirrors
+                        # the TUI's _finish_remapped.
+                        if record is not None and record.remapped and record.name:
+                            try:
+                                rfiles = await aria2.get_files_detailed(dl.gid)
+                            except Exception:
+                                rfiles = []
+                            rpaths = [
+                                Path(f["path"]) for f in rfiles
+                                if f["selected"] and f["path"]
+                            ]
+                            rpaths = [p for p in rpaths if p.exists()]
+                            if rpaths:
+                                flagged = False
+                                for rpath in rpaths:
+                                    scan_result = await scanner.full_scan(rpath)
+                                    if scan_result.threats or scan_result.blocked_files:
+                                        console.print(
+                                            f"[red]✗ FLAGGED:[/] {rpath.name} — "
+                                            f"{scan_result.summary}"
+                                        )
+                                        await _stop_seeding()
+                                        scanner.quarantine(rpath, scan_result)
+                                        flagged = True
+                                        break
+                                store.remove(record.gid)
+                                if not flagged:
+                                    junk = effective_junk(
+                                        record.category, configured_junk(config)
+                                    )
+                                    note = " — still seeding"
+                                    if dl.name and dl.name != dl.gid:
+                                        wrapper = dl_dir / dl.name
+                                        if not cleanup_wrapper(wrapper, junk):
+                                            await _stop_seeding()
+                                            try:
+                                                for message in organize_download(
+                                                    wrapper, Path(record.dir),
+                                                    record.name, junk,
+                                                ):
+                                                    console.print(f"[yellow]⚠ {message}[/]")
+                                            except OSError as e:
+                                                console.print(
+                                                    f"[red]Filing stragglers failed:[/] {e}"
+                                                )
+                                            note = ""
+                                    console.print(
+                                        f"[green]📁 Filed: {record.name} → "
+                                        f"{shorten(record.dir)}{note}[/]"
+                                    )
+                                continue
+                            # aria2 lost the file list — fall through to the
+                            # locate-and-move path below.
+
                         download_path = None
                         if dl.name and dl.name != dl.gid:
                             candidate = dl_dir / dl.name
@@ -530,14 +659,6 @@ def status(ctx, watch):
                                 download_path = max(children, key=lambda p: p.stat().st_mtime)
                         if download_path is None or not download_path.exists():
                             continue
-                        async def _stop_seeding(gid=dl.gid):
-                            """Release the files before moving them — aria2
-                            loses track of a torrent the moment it is moved."""
-                            for call in (aria2.force_remove, aria2.remove_result):
-                                try:
-                                    await call(gid)
-                                except Exception:
-                                    pass  # already stopped
                         console.print(f"\n[bold]Scanning completed download:[/] {download_path.name}")
                         scan_result = await scanner.full_scan(download_path, expected_bytes=dl.total_bytes)
                         if scan_result.clean:
@@ -548,6 +669,34 @@ def status(ctx, watch):
                             scanner.quarantine(download_path, scan_result)
                         else:
                             console.print(f"[yellow]⚠ Scan warning:[/] {scan_result.error}")
+
+                        # File the download under the name chosen at add time
+                        # (in the TUI). The plan wins over content detection —
+                        # the user picked this destination by hand.
+                        if not scan_result.clean:
+                            record = None
+                        if record is not None:
+                            store.remove(record.gid)
+                            if record.name:
+                                await _stop_seeding()
+                                junk = effective_junk(
+                                    record.category, configured_junk(config)
+                                )
+                                try:
+                                    messages = organize_download(
+                                        download_path, Path(record.dir),
+                                        record.name, junk,
+                                    )
+                                except OSError as e:
+                                    console.print(f"[red]Filing failed:[/] {e}")
+                                    continue
+                                console.print(
+                                    f"[green]📁 Filed: {record.name} → "
+                                    f"{shorten(record.dir)}[/]"
+                                )
+                                for message in messages:
+                                    console.print(f"[yellow]⚠ {message}[/]")
+                                continue
 
                         # Safety net for whatever the in-flight re-route could
                         # not settle. Usually finds the download already in the

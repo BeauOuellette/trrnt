@@ -12,15 +12,19 @@ import pytest
 
 from torrentcli.tui import (
     UNDELIVERABLE_KEYS,
+    HomeScreen,
+    IndexersScreen,
     InspectScreen,
     KeysScreen,
+    SetupScreen,
     TGetApp,
 )
 
 from test_downloads_table import _app, _result
 
 
-ALL_SCREENS = [TGetApp, InspectScreen, KeysScreen]
+ALL_SCREENS = [TGetApp, HomeScreen, IndexersScreen, InspectScreen, KeysScreen,
+               SetupScreen]
 
 
 # ── pressable ─────────────────────────────────────────────────────────────────

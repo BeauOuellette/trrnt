@@ -7,6 +7,9 @@ jackett:
   api_key: "YOUR_JACKETT_API_KEY"
   # Indexer names to search (empty = all)
   indexers: []
+  # Indexer ids to skip — e.g. ones behind Cloudflare that error on every
+  # search. Manage these from the TUI with Ctrl+N rather than by hand.
+  exclude_indexers: []
   # Timeout in seconds
   timeout: 30
 
@@ -16,10 +19,34 @@ aria2:
   rpc_secret: ""
   # Download directory (default for uncategorized)
   download_dir: "~/Downloads/torrents"
-  # Max concurrent downloads
+  # Max concurrent downloads. Extra torrents queue rather than all crawling
+  # along at once.
   max_concurrent: 3
-  # Seed ratio limit (0 = unlimited)
+  # Global speed limits, in aria2's notation: bare bytes/sec, or a number with
+  # a K or M suffix. "0" is unlimited. Capping upload is usually what keeps the
+  # rest of your connection usable while seeding.
+  max_download_rate: "0"
+  max_upload_rate: "0"
+  # Seeding. These two zeroes mean opposite things — that is aria2's design,
+  # not ours, and getting it backwards is the classic mistake:
+  #   seed_ratio: 0   seed FOREVER, ignoring ratio
+  #   seed_time:  0   never seed at all; stop the moment a download completes
+  #   seed_time:  ""  no time limit (stop on ratio alone)
+  # With both set, seeding ends as soon as either one is reached.
   seed_ratio: 2.0
+  seed_time: ""
+  # BitTorrent listen port. A range is fine. Pin a single port if your VPN
+  # forwards one — being connectable is most of what makes a swarm fast.
+  listen_port: "6881-6999"
+  # MSE/PE peer encryption:
+  #   "off"      plaintext BitTorrent, visible to anything on the path
+  #   "prefer"   encrypt when the peer offers it, still talk to legacy peers
+  #   "require"  refuse unencrypted peers entirely (smaller swarm)
+  encryption: "prefer"
+  # Local Peer Discovery broadcasts what you are downloading to your local
+  # network — which is outside the VPN tunnel by design. aria2's own default
+  # is off and so is ours; turn it on only on a network you trust.
+  enable_lpd: false
   # Interface every aria2 socket binds to — peers, trackers and DHT.
   #   ""       auto-detect the tunnel carrying traffic (recommended)
   #   "utun4"  pin one by hand; aria2 refuses to start if it is missing
@@ -92,6 +119,40 @@ destinations:
   # alongside it as "<name> 1".
   require_mount: true
 
+# Download organizing
+organize:
+  # Before each TUI download, a prompt pre-fills a clean name and destination
+  # from the release title ("The.Agency.S02E03.2160p..." → "The Agency S02E03"
+  # → TV/The Agency/Season 2). Enter accepts, "As-is" skips renaming for that
+  # download, Esc skips the download.
+  rename_prompt: true
+  # Deselect junk files inside torrents before any payload byte downloads —
+  # they never hit the disk at all.
+  exclude_junk: true
+  # File types treated as junk. Cover art is kept for music/audiobooks and
+  # .txt is kept for ebooks automatically; subtitles are never junk.
+  junk_extensions:
+    - .nfo
+    - .sfv
+    - .srr
+    - .srs
+    - .diz
+    - .url
+    - .website
+    - .torrent
+    - .md5
+    - .sha1
+    - .sha256
+    - .txt
+    - .jpg
+    - .jpeg
+    - .png
+    - .gif
+    - .bmp
+    - .webp
+    - .htm
+    - .html
+
 # Security settings
 security:
   # ClamAV virus scanning
@@ -135,3 +196,6 @@ display:
   max_results: 50
   # Default sort: seeders, size, name
   default_sort: "seeders"
+  # Land on the home screen (logo, quick search, service health) at launch.
+  # Esc leaves it for the working screen. Set false to skip it entirely.
+  home: true
