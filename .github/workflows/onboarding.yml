@@ -1,0 +1,101 @@
+name: Onboarding
+
+# The fresh-machine test a developer box cannot give: a runner with Homebrew
+# and none of aria2/Jackett/ClamAV installed is exactly the state a new user
+# is in. This installs them for real, starts Jackett for real, and checks the
+# wizard's assumptions against the Jackett that comes out.
+#
+# Jackett's admin API is the one its own web UI uses — no stability contract —
+# so this job is also the early-warning system for upstream drift.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, to catch Jackett changes that land without us touching a line.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  fresh-install:
+    name: Fresh macOS install
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Confirm the runner starts clean
+        # If a future runner image ships these preinstalled, this job quietly
+        # stops testing what it claims to test. Say so rather than pass.
+        run: |
+          for f in aria2 jackett; do
+            if brew list --versions "$f" >/dev/null 2>&1; then
+              echo "::warning::$f is preinstalled on this runner — the install step is not exercising a fresh machine"
+            fi
+          done
+
+      - name: Install the stack the way the wizard does
+        run: |
+          brew install aria2 jackett
+          # ClamAV is a large install and the wizard treats it as optional;
+          # its absence is a supported state, so it is not installed here.
+
+      - run: pip install -e ".[dev]"
+
+      - name: Start Jackett with an empty data folder
+        run: |
+          DATA="$RUNNER_TEMP/jackett-data"
+          mkdir -p "$DATA"
+          nohup jackett --Port 9118 --DataFolder "$DATA" --NoRestart \
+            > "$RUNNER_TEMP/jackett.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:9118/UI/Dashboard && break
+            sleep 2
+          done
+          curl -sf -o /dev/null http://localhost:9118/UI/Dashboard \
+            || { echo "Jackett never came up"; cat "$RUNNER_TEMP/jackett.log"; exit 1; }
+          echo "TRRNT_JACKETT_DATA=$DATA" >> "$GITHUB_ENV"
+
+      - name: Jackett minted its own API key
+        # The claim onboarding rests on: a first start writes a usable key,
+        # so the user never copies one out of a web page.
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          p = pathlib.Path(os.environ["TRRNT_JACKETT_DATA"]) / "ServerConfig.json"
+          if not p.exists():
+              sys.exit(f"Jackett started but wrote no {p}")
+          key = json.loads(p.read_text()).get("APIKey", "")
+          if not key:
+              sys.exit("Jackett wrote a config with no APIKey")
+          print(f"API key minted on first start ({len(key)} chars)")
+          PY
+
+      - name: Live onboarding tests
+        env:
+          TRRNT_LIVE: "1"
+          TRRNT_LIVE_JACKETT: http://localhost:9118
+        run: pytest -q tests/test_onboard_live.py -v
+
+      - name: Wizard end to end against the fresh Jackett
+        env:
+          TRRNT_LIVE_JACKETT: http://localhost:9118
+        run: python scripts/ci_wizard_e2e.py
+
+      - name: Jackett log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/jackett.log" || true
