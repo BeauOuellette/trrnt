@@ -243,7 +243,13 @@ class JackettAdmin:
         chiefly Cloudflare, which is invisible until something is fetched.
         204 means it worked; anything else carries a reason.
 
-        Verdicts: "ok", "cloudflare", "error".
+        Verdicts: "ok", "cloudflare", "moved", "error".
+
+        "moved" is a tracker whose domain has gone: the definition ships
+        several, and the one Jackett is pointed at has been parked, resold or
+        retired. Jackett refuses to follow the cross-domain redirect and says
+        so — but the phrase only survives if the whole message does, which is
+        why the redirect case is checked before the detail is trimmed.
         """
         try:
             r = await self._client.post(
@@ -260,7 +266,43 @@ class JackettAdmin:
             detail = f"HTTP {r.status_code}"
         if "FlareSolverr" in detail:
             return "cloudflare", "needs FlareSolverr"
+        if "redirected to another domain" in detail:
+            return "moved", "domain has moved"
+        # Jackett prefixes its exceptions with class and indexer name; the
+        # tail is the part a person can act on.
         return "error", detail.split(":")[-1].strip()[:80] or detail[:80]
+
+    async def site_link(self, indexer_id: str) -> str | None:
+        """The domain Jackett is currently pointing this indexer at."""
+        for item in await self._get_json(f"/api/v2.0/indexers/{indexer_id}/config"):
+            if isinstance(item, dict) and item.get("id") == "sitelink":
+                return item.get("value")
+        return None
+
+    async def set_site_link(self, indexer_id: str, url: str) -> None:
+        """Point an indexer at one of its other known domains.
+
+        Edits only the sitelink field of the config Jackett hands back, so
+        every other setting on the indexer survives untouched.
+        """
+        config = await self._get_json(f"/api/v2.0/indexers/{indexer_id}/config")
+        if not isinstance(config, list):
+            raise JackettAdminError(f"{indexer_id}: unexpected config shape")
+        found = False
+        for item in config:
+            if isinstance(item, dict) and item.get("id") == "sitelink":
+                item["value"] = url
+                found = True
+        if not found:
+            raise JackettAdminError(f"{indexer_id} has no editable site link")
+        try:
+            r = await self._client.post(
+                f"/api/v2.0/indexers/{indexer_id}/config", json=config,
+            )
+        except httpx.HTTPError as e:
+            raise JackettAdminError(f"repointing {indexer_id} failed: {e}") from e
+        if r.status_code >= 400:
+            raise JackettAdminError(f"{indexer_id}: HTTP {r.status_code}")
 
     async def _get_json(self, path: str, params: dict | None = None):
         try:
@@ -277,6 +319,49 @@ class JackettAdmin:
             return r.json()
         except ValueError as e:
             raise JackettAdminError(f"{path}: not JSON") from e
+
+
+def alternate_links(catalog: list[dict], indexer_id: str) -> list[str]:
+    """Other domains this indexer is known by, current one first removed.
+
+    Jackett publishes the definition's link list on the catalog entry, so
+    this needs no access to the definition files themselves — which live in
+    a version-stamped Homebrew Cellar path that would break on every upgrade.
+    """
+    entry = next((i for i in catalog if i.get("id") == indexer_id), None)
+    if not entry:
+        return []
+    current = (entry.get("site_link") or "").rstrip("/")
+    alternates = entry.get("alternativesitelinks") or []
+    return [a for a in alternates if a.rstrip("/") != current]
+
+
+async def try_alternate_links(
+    admin: "JackettAdmin", indexer_id: str, links: list[str], on_try=None,
+) -> str | None:
+    """Repoint an indexer until one of its other domains answers.
+
+    Returns the link that worked, or None having restored the original — a
+    failed rotation must not leave the indexer pointed somewhere even worse
+    than where it started.
+    """
+    original = await admin.site_link(indexer_id)
+    for link in links:
+        if on_try:
+            on_try(link)
+        try:
+            await admin.set_site_link(indexer_id, link)
+        except JackettAdminError:
+            continue
+        verdict, _detail = await admin.test_indexer(indexer_id)
+        if verdict == "ok":
+            return link
+    if original:
+        try:
+            await admin.set_site_link(indexer_id, original)
+        except JackettAdminError:
+            pass
+    return None
 
 
 def order_catalog(catalog: list[dict]) -> list[dict]:

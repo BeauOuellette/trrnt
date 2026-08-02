@@ -278,6 +278,17 @@ switched off back into the search once it answers, and widens the per-indexer
 timeout if it is too tight for a Cloudflare-backed tracker to reply. The other
 indexers carry the search while it works, so nothing blocks on it.
 
+It also handles the other way a tracker goes quiet: **its domain moves.**
+Public trackers get parked, resold or retired, and Jackett refuses to follow
+the cross-domain redirect that results — reporting, unhelpfully, a parse
+error. Definitions ship several domains for exactly this reason, so ^y walks
+the rest of the list and keeps the first that answers. If none do, the
+original is restored rather than leaving the indexer pointed somewhere worse.
+
+Pressed with nothing currently failing, ^y checks every configured indexer
+rather than a list of usual suspects — a tracker whose domain quietly moved
+is on nobody's list, and testing a healthy one costs a fraction of a second.
+
 Setting `solver.enabled: false` turns the whole thing off; the gated indexers
 then simply stay quiet, exactly as before.
 

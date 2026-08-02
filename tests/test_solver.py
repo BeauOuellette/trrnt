@@ -266,3 +266,78 @@ def test_running_an_uninstalled_solver_is_a_clean_error(monkeypatch):
 
     with pytest.raises(solver.SolverError, match="not installed"):
         asyncio.run(go())
+
+
+# ── Domain rotation ───────────────────────────────────────────────────────────
+
+CATALOG_WITH_ALTERNATES = [
+    {
+        "id": "0magnet",
+        "site_link": "https://13mag.net/",
+        "alternativesitelinks": ["https://13mag.net/", "https://16mag.net/"],
+    },
+    {"id": "thepiratebay", "site_link": "https://thepiratebay.org/"},
+]
+
+
+def test_alternates_exclude_the_domain_already_in_use():
+    from trrnt import onboard
+
+    links = onboard.alternate_links(CATALOG_WITH_ALTERNATES, "0magnet")
+
+    assert links == ["https://16mag.net/"]
+
+
+def test_an_indexer_with_one_domain_has_no_alternates():
+    from trrnt import onboard
+
+    assert onboard.alternate_links(CATALOG_WITH_ALTERNATES, "thepiratebay") == []
+    assert onboard.alternate_links(CATALOG_WITH_ALTERNATES, "nope") == []
+
+
+class RotatingAdmin:
+    """A Jackett where exactly one domain answers."""
+
+    def __init__(self, working, start="https://13mag.net/"):
+        self.working = working
+        self.current = start
+        self.sets = []
+
+    async def site_link(self, indexer_id):
+        return self.current
+
+    async def set_site_link(self, indexer_id, url):
+        self.current = url
+        self.sets.append(url)
+
+    async def test_indexer(self, indexer_id):
+        if self.current == self.working:
+            return "ok", ""
+        return "moved", "domain has moved"
+
+
+def test_rotation_keeps_the_domain_that_answers():
+    from trrnt import onboard
+
+    admin = RotatingAdmin(working="https://16mag.net/")
+
+    found = asyncio.run(onboard.try_alternate_links(
+        admin, "0magnet", ["https://9mag.net/", "https://16mag.net/"],
+    ))
+
+    assert found == "https://16mag.net/"
+    assert admin.current == "https://16mag.net/"
+
+
+def test_a_failed_rotation_restores_the_original_domain():
+    """Leaving an indexer pointed somewhere worse than it started is not a repair."""
+    from trrnt import onboard
+
+    admin = RotatingAdmin(working="https://nothing-works.example/")
+
+    found = asyncio.run(onboard.try_alternate_links(
+        admin, "0magnet", ["https://9mag.net/", "https://16mag.net/"],
+    ))
+
+    assert found is None
+    assert admin.current == "https://13mag.net/"

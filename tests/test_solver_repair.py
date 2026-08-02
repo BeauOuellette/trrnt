@@ -178,7 +178,7 @@ def test_repair_with_everything_healthy_says_so():
                 pass
 
             async def configured_ids(self):
-                return {"thepiratebay"}  # nothing gated
+                return set()  # nothing configured at all
 
             async def close(self):
                 pass
@@ -302,3 +302,66 @@ def test_a_generous_ceiling_is_left_alone(tmp_path):
         return config.get("jackett", "indexer_timeout"), app._timeout_raised
 
     assert _run(body) == (90, None)
+
+
+def test_repair_with_no_prior_failure_checks_every_configured_indexer():
+    """A parked domain is on nobody's known-gated list.
+
+    Pressing ^y out of the blue has to look at everything, or the one tracker
+    that quietly moved is the one never examined.
+    """
+    async def body(app, _pilot):
+        import trrnt.tui as tui
+
+        app.notify = lambda msg, **kw: None
+        primed = []
+
+        class FakeAdmin:
+            def __init__(self, url):
+                pass
+
+            async def login(self, password=None):
+                pass
+
+            async def configured_ids(self):
+                return {"thepiratebay", "0magnet", "1337x"}
+
+            async def set_flaresolverr(self, url, max_timeout_ms=None):
+                pass
+
+            async def wait_until_up(self, timeout=45.0):
+                return True
+
+            async def close(self):
+                pass
+
+        class FakeProc:
+            url = "http://127.0.0.1:8191"
+
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return None
+
+        async def fake_prime(admin, ids, on_result=None):
+            primed.extend(ids)
+            return [(i, "ok", "") for i in ids]
+
+        originals = (tui.solver.installed, tui.onboard.JackettAdmin,
+                     tui.solver.SolverProcess, tui.solver.prime)
+        tui.solver.installed = lambda: True
+        tui.onboard.JackettAdmin = FakeAdmin
+        tui.solver.SolverProcess = FakeProc
+        tui.solver.prime = fake_prime
+        try:
+            await app._repair_indexers.__wrapped__(app)
+        finally:
+            (tui.solver.installed, tui.onboard.JackettAdmin,
+             tui.solver.SolverProcess, tui.solver.prime) = originals
+        return sorted(primed)
+
+    assert _run(body) == ["0magnet", "1337x", "thepiratebay"]

@@ -1380,6 +1380,7 @@ class IndexersScreen(ModalScreen[None]):
         for row in self._rows:
             verdict, detail = self._health.get(row["id"], ("", ""))
             mark = {"ok": f"[{SEED_GOOD}]●[/]", "cloudflare": f"[{SEED_WARN}]●[/]",
+                    "moved": f"[{SEED_WARN}]●[/]",
                     "error": f"[{SEED_NONE}]●[/]", "testing": f"[{DIM}]◌[/]"}.get(verdict, " ")
             # No "(excluded)" suffix: the tickbox already says that, and it
             # would only be redrawn on load — a toggle does not rebuild the
@@ -1883,7 +1884,9 @@ class SetupScreen(Screen[None]):
             verdict, _detail = outcome
             if verdict == "ok":
                 working.append(indexer_id)
-            elif verdict == "cloudflare":
+            elif verdict in ("cloudflare", "moved"):
+                # Both are repairable, and the solver step handles each —
+                # a moved domain by rotating, a challenge by solving it.
                 blocked.append(indexer_id)
             else:
                 broken.append(indexer_id)
@@ -3073,12 +3076,39 @@ class TGetApp(App):
             if (indexer_id in onboard.NEEDS_SOLVER
                     or "flaresolverr" in lowered
                     or "cloudflare" in lowered
+                    or "redirected to another domain" in lowered
                     or "timed out" in lowered):
                 gated.append(indexer_id)
         return gated
 
     def action_repair_indexers(self) -> None:
         self._repair_indexers()
+
+    async def _rotate_domains(self, admin, moved: list[str], results: list) -> list:
+        """Walk each moved indexer's other known domains; keep what answers.
+
+        Returns `results` with the rotated entries updated, so the caller's
+        cleared/failed split stays a single source of truth.
+        """
+        catalog = await admin.catalog()
+        fixed: dict[str, str] = {}
+        for indexer_id in moved:
+            links = onboard.alternate_links(catalog, indexer_id)
+            if not links:
+                continue
+            self.notify(f"{indexer_id} moved — trying {len(links)} other domain(s).")
+            working = await onboard.try_alternate_links(admin, indexer_id, links)
+            if working:
+                fixed[indexer_id] = working
+        if not fixed:
+            return results
+        self.notify(
+            "Repointed " + ", ".join(f"{i} → {u}" for i, u in fixed.items()),
+        )
+        return [
+            (i, "ok", "") if i in fixed else (i, verdict, detail)
+            for i, verdict, detail in results
+        ]
 
     def _readmit(self, indexer_ids: list[str]) -> None:
         """Put repaired indexers back in the search.
@@ -3144,13 +3174,13 @@ class TGetApp(App):
             await admin.login()
             configured = await admin.configured_ids()
             if not targets:
-                # Nothing failed in the last search — but an indexer switched
-                # off *because* it kept failing never fails again, it just
-                # stays quiet forever. Those are exactly what this repairs.
-                excluded = set(self.config.get("jackett", "exclude_indexers") or [])
-                targets = sorted(
-                    (configured & onboard.NEEDS_SOLVER) | (configured & excluded)
-                )
+                # Nothing failed in the last search, so check everything. A
+                # guess-list of known-gated trackers misses the two cases that
+                # matter most: an indexer switched off *because* it kept
+                # failing never fails again, it just stays quiet forever; and
+                # a tracker whose domain was parked is not on anybody's list.
+                # Testing a healthy indexer costs a fraction of a second.
+                targets = sorted(configured)
             if not targets:
                 self.notify("Nothing to repair — every indexer is answering.")
                 return
@@ -3163,6 +3193,14 @@ class TGetApp(App):
                 )
                 await admin.wait_until_up()
                 results = await solver.prime(admin, targets)
+
+            # An indexer whose domain has been parked or resold cannot be
+            # fixed by any amount of Cloudflare clearance — the challenge
+            # solves and lands on someone else's site. Its definition ships
+            # other domains, so try those before calling it dead.
+            moved = [i for i, verdict, _ in results if verdict == "moved"]
+            if moved:
+                results = await self._rotate_domains(admin, moved, results)
 
             cleared = [i for i, verdict, _ in results if verdict == "ok"]
             failed = [i for i, verdict, _ in results if verdict != "ok"]

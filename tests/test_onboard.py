@@ -360,3 +360,34 @@ def test_curated_cloudflare_picks_are_not_default_on():
     # indexers that answer.
     ranks = [CURATED_PUBLIC.index(c) for c in NEEDS_SOLVER]
     assert min(ranks) > max(CURATED_PUBLIC.index(c) for c in default_on)
+
+
+def test_a_parked_domain_reads_as_moved_not_as_a_parse_error():
+    """The actionable half of Jackett's message is in front of the colon.
+
+    A resold tracker domain reports "Got redirected to another domain. Try
+    changing the indexer URL to <somewhere unrelated>.: Parse error" — split
+    on the last colon and all that survives is "Parse error", which reads as
+    a dead site rather than one whose definition ships three other domains.
+    """
+    import asyncio
+    import httpx
+
+    from trrnt.onboard import JackettAdmin
+
+    message = ("Exception (0magnet): Got redirected to another domain. "
+               "Try changing the indexer URL to https://www.craigslist.org/.: "
+               "Parse error")
+
+    def handler(request):
+        if request.url.path.endswith("/test"):
+            return httpx.Response(500, json={"error": message})
+        return httpx.Response(200, text="ok")
+
+    admin = JackettAdmin("http://jackett.test",
+                         transport=httpx.MockTransport(handler))
+    verdict, detail = asyncio.run(admin.test_indexer("0magnet"))
+    asyncio.run(admin.close())
+
+    assert verdict == "moved"
+    assert detail == "domain has moved"
